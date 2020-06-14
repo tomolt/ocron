@@ -139,6 +139,7 @@ parse_line(char *cur, int lineno)
 
 	skip_space(&cur);
 	
+	/* Dismiss empty lines and comments. */
 	if (*cur == '#') return;
 	if (*cur == '\n' || *cur == 0) return;
 	
@@ -146,6 +147,7 @@ parse_line(char *cur, int lineno)
 	skip_space(&cur);
 	if (parse_hours(&cur, &job.hours) < 0) goto bad_line;
 
+	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
 		capJobs *= 2;
 		jobs = reallocarray(jobs, capJobs, sizeof(jobs[0]));
@@ -215,6 +217,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	unsigned int init = check_tm(job, tm);
 
 	/* Determine minute, and exit early if possible. */
+	assert(job.minutes != 0);
 	if (!(init >> 1)) {
 		++tm.tm_min;
 		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
@@ -226,6 +229,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	tm.tm_min = ffsll(job.minutes) - 1;
 
 	/* Determine hour, and exit early if possible. */
+	assert(job.hours != 0);
 	if (!(init >> 2)) {
 		++tm.tm_hour;
 		long hours_left = job.hours & ~0UL << tm.tm_hour;
@@ -259,11 +263,20 @@ nearest_job(void)
 {
 	int j = 0;
 	for (int i = 1; i < numJobs; ++i) {
-		if (jobs[i].time < jobs[j].time) {
-			j = i;
-		}
+		if (jobs[i].time < jobs[j].time) j = i;
 	}
 	return j;
+}
+
+static void
+update_job(struct Job *job, time_t now)
+{
+	struct tm tm;
+
+	localtime_r(&now, &tm);
+	next_tm(*job, &tm);
+	job->time = mktime(&tm);
+	/* TODO what if job->time == (time_t) -1 here? */
 }
 
 int
@@ -282,27 +295,20 @@ main()
 
 	time_t now;
 	time(&now);
-	struct tm tm;
-	localtime_r(&now, &tm);
-
 	for (int i = 0; i < numJobs; ++i) {
-		struct tm job_tm = tm;
-		next_tm(jobs[i], &job_tm);
-		jobs[i].time = mktime(&job_tm);
-		/* TODO what if job.time == (time_t) -1 here? */
+		update_job(&jobs[i], now);
 	}
 
 	for (int t = 0; t < 20; ++t) {
 		int j = nearest_job();
-		localtime_r(&jobs[j].time, &tm);
 
+		struct tm tm;
+		localtime_r(&jobs[j].time, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
 		printf("%s\t%d\n", buf, jobs[j].lineno);
 
-		struct tm job_tm = tm;
-		next_tm(jobs[j], &job_tm);
-		jobs[j].time = mktime(&job_tm);
+		update_job(&jobs[j], jobs[j].time);
 	}
 	return 0;
 }
