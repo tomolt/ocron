@@ -19,6 +19,7 @@ struct Job
 	long mdays;
 	short months;
 	/* short wdays; */
+	short lineno;
 };
 
 static int capJobs;
@@ -103,15 +104,38 @@ more:
 	return 0;
 }
 
+static int
+parse_hours(char **ptr, long *hours)
+{
+	char *cur = *ptr;
+
+more:
+	if (!(*cur >= '0' && *cur <= '9')) return -1;
+	unsigned int num = 0;
+	do {
+		num = num * 10 + *cur - '0';
+		++cur;
+	} while (*cur >= '0' && *cur <= '9');
+	if (num >= 24) return -1;
+	*hours |= 1L << num;
+	if (*cur == ',') {
+		++cur;
+		goto more;
+	}
+
+	*ptr = cur;
+	return 0;
+}
+
 static void
 parse_line(char *cur, int lineno)
 {
 	struct Job job;
 
 	memset(&job, 0, sizeof(job));
-	job.hours = ~0L;
 	job.mdays = ~0L;
 	job.months = ~0;
+	job.lineno = lineno;
 
 	skip_space(&cur);
 	
@@ -120,6 +144,7 @@ parse_line(char *cur, int lineno)
 	
 	if (parse_minutes(&cur, &job.minutes) < 0) goto bad_line;
 	skip_space(&cur);
+	if (parse_hours(&cur, &job.hours) < 0) goto bad_line;
 
 	if (numJobs >= capJobs) {
 		capJobs *= 2;
@@ -192,7 +217,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	/* Determine minute, and exit early if possible. */
 	if (!(init >> 1)) {
 		++tm.tm_min;
-		long long minutes_left = job.minutes & (~0LL << tm.tm_min);
+		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
 		if (minutes_left != 0) {
 			tm.tm_min = ffsll(minutes_left) - 1;
 			goto finished;
@@ -203,7 +228,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	/* Determine hour, and exit early if possible. */
 	if (!(init >> 2)) {
 		++tm.tm_hour;
-		long hours_left = job.hours & ~0L << tm.tm_hour;
+		long hours_left = job.hours & ~0UL << tm.tm_hour;
 		if (hours_left != 0) {
 			tm.tm_hour = ffsl(hours_left) - 1;
 			goto finished;
@@ -273,7 +298,7 @@ main()
 
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\n", buf);
+		printf("%s\t%d\n", buf, jobs[j].lineno);
 
 		struct tm job_tm = tm;
 		next_tm(jobs[j], &job_tm);
