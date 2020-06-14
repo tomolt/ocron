@@ -20,6 +20,10 @@ struct Job
 	/* short wdays; */
 };
 
+static int capJobs;
+static int numJobs;
+static struct Job *jobs;
+
 static void
 die(const char *fmt, ...)
 {
@@ -39,7 +43,7 @@ die(const char *fmt, ...)
 	exit(1);
 }
 
-/*static char *
+static char *
 read_file(const char *filename)
 {
 	struct stat info;
@@ -68,24 +72,65 @@ read_file(const char *filename)
 }
 
 static void
-skip_space(char **line)
+skip_space(char **ptr)
 {
-	char *cur = *line;
+	char *cur = *ptr;
 	while (*cur == ' ' || *cur == '\t' || *cur == '\r') ++cur;
-	*line = cur;
+	*ptr = cur;
 }
 
-static unsigned int
-parse_num(char **str)
+static int
+parse_minutes(char **ptr, long long *minutes)
 {
+	char *cur = *ptr;
+
+more:
+	if (!(*cur >= '0' && *cur <= '9')) return -1;
 	unsigned int num = 0;
-	char *cur = *str;
-	while (*cur >= '0' && *cur <= '9') {
+	do {
 		num = num * 10 + *cur - '0';
 		++cur;
+	} while (*cur >= '0' && *cur <= '9');
+	if (num >= 60) return -1;
+	*minutes |= 1LL << num;
+	if (*cur == ',') {
+		++cur;
+		goto more;
 	}
-	*str = cur;
-	return num;
+
+	*ptr = cur;
+	return 0;
+}
+
+static void
+parse_line(char *cur, int lineno)
+{
+	struct Job job;
+
+	memset(&job, 0, sizeof(job));
+	job.hours = ~0L;
+	job.mdays = ~0L;
+	job.months = ~0;
+
+	skip_space(&cur);
+	
+	if (*cur == '#') return;
+	if (*cur == '\n' || *cur == 0) return;
+	
+	if (parse_minutes(&cur, &job.minutes) < 0) goto bad_line;
+	skip_space(&cur);
+	if (*cur == '\n' || *cur == 0) return;
+
+	if (numJobs >= capJobs) {
+		capJobs *= 2;
+		jobs = reallocarray(jobs, capJobs, sizeof(jobs[0]));
+		if (jobs == NULL) die("Can't allocate memory for jobs:");
+	}
+	jobs[numJobs++] = job;
+
+	/* fall through */
+bad_line:
+	fprintf(stderr, "Line %d will be ignored because of bad syntax.\n", lineno);
 }
 
 static void
@@ -97,16 +142,14 @@ parse_table(const char *filename)
 	text = read_file(filename);
 	ptr = text;
 	for (;;) {
+		parse_line(ptr, lineno);
 		eol = strchr(ptr, '\n');
 		if (eol == NULL) break;
-		*eol = 0;
-		parse_line(ptr, lineno);
 		ptr = eol + 1;
 		++lineno;
 	}
-	parse_line(ptr, lineno);
 	free(text);
-}*/
+}
 
 static int
 leap_year(int year)
@@ -139,9 +182,9 @@ check_term(struct Job job, struct tm tm)
 }
 
 static void
-next_term(struct Job job, struct tm *term)
+next_tm(struct Job job, struct tm *tm_ptr)
 {
-	struct tm tm = *term;
+	struct tm tm = *tm_ptr;
 	tm.tm_sec = 0;
 
 	unsigned int init = check_term(job, tm);
@@ -183,23 +226,30 @@ next_term(struct Job job, struct tm *term)
 	} while (check_term(job, tm) >> 2);
 
 finished:
-	*term = tm;
+	*tm_ptr = tm;
 }
 
 int
 main()
 {
+	capJobs = 4;
+	jobs = calloc(capJobs, sizeof(jobs[0]));
+	if (jobs == NULL) die("Can't allocate memory for jobs:");
+
+	parse_table(CRONTAB);
+
 	struct Job job = { 0 };
 	job.minutes = (1 << 20);
 	job.hours = (1 << 22);
 	job.mdays = (1 << 29);
 	job.months = (1 << 1) | (1 << 4) | (1 << 9);
+
 	time_t now;
 	time(&now);
 	struct tm tm;
 	localtime_r(&now, &tm);
 	for (int i = 0; i < 100; ++i) {
-		next_term(job, &tm);
+		next_tm(job, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
 		printf("%s\n", buf);
