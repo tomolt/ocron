@@ -13,6 +13,7 @@
 
 struct Job
 {
+	time_t time;
 	long long minutes;
 	long hours;
 	long mdays;
@@ -119,7 +120,6 @@ parse_line(char *cur, int lineno)
 	
 	if (parse_minutes(&cur, &job.minutes) < 0) goto bad_line;
 	skip_space(&cur);
-	if (*cur == '\n' || *cur == 0) return;
 
 	if (numJobs >= capJobs) {
 		capJobs *= 2;
@@ -127,8 +127,8 @@ parse_line(char *cur, int lineno)
 		if (jobs == NULL) die("Can't allocate memory for jobs:");
 	}
 	jobs[numJobs++] = job;
+	return;
 
-	/* fall through */
 bad_line:
 	fprintf(stderr, "Line %d will be ignored because of bad syntax.\n", lineno);
 }
@@ -171,7 +171,7 @@ days_in_month(int month, int year)
 }
 
 static unsigned int
-check_term(struct Job job, struct tm tm)
+check_tm(struct Job job, struct tm tm)
 {
 	unsigned int ret = 0;
 	if (!(job.minutes >> tm.tm_min  & 1)) ret |= 1;
@@ -187,7 +187,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	struct tm tm = *tm_ptr;
 	tm.tm_sec = 0;
 
-	unsigned int init = check_term(job, tm);
+	unsigned int init = check_tm(job, tm);
 
 	/* Determine minute, and exit early if possible. */
 	if (!(init >> 1)) {
@@ -223,10 +223,22 @@ next_tm(struct Job job, struct tm *tm_ptr)
 			}
 		}
 		tm.tm_wday = (tm.tm_wday + 1) % 7;
-	} while (check_term(job, tm) >> 2);
+	} while (check_tm(job, tm) >> 2);
 
 finished:
 	*tm_ptr = tm;
+}
+
+static int
+nearest_job(void)
+{
+	int j = 0;
+	for (int i = 1; i < numJobs; ++i) {
+		if (jobs[i].time < jobs[j].time) {
+			j = i;
+		}
+	}
+	return j;
 }
 
 int
@@ -238,21 +250,34 @@ main()
 
 	parse_table(CRONTAB);
 
-	struct Job job = { 0 };
-	job.minutes = (1 << 20);
-	job.hours = (1 << 22);
-	job.mdays = (1 << 29);
-	job.months = (1 << 1) | (1 << 4) | (1 << 9);
+	if (numJobs == 0) {
+		/* TODO lift this requirement by just permanently idling. */
+		die("Must have at least one job.");
+	}
 
 	time_t now;
 	time(&now);
 	struct tm tm;
 	localtime_r(&now, &tm);
-	for (int i = 0; i < 100; ++i) {
-		next_tm(job, &tm);
+
+	for (int i = 0; i < numJobs; ++i) {
+		struct tm job_tm = tm;
+		next_tm(jobs[i], &job_tm);
+		jobs[i].time = mktime(&job_tm);
+		/* TODO what if job.time == (time_t) -1 here? */
+	}
+
+	for (int t = 0; t < 20; ++t) {
+		int j = nearest_job();
+		localtime_r(&jobs[j].time, &tm);
+
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
 		printf("%s\n", buf);
+
+		struct tm job_tm = tm;
+		next_tm(jobs[j], &job_tm);
+		jobs[j].time = mktime(&job_tm);
 	}
 	return 0;
 }
