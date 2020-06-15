@@ -82,9 +82,10 @@ skip_space(char **ptr)
 }
 
 static int
-parse_minutes(char **ptr, long long *minutes)
+parse_field(char **ptr, long long *field, unsigned int limit)
 {
 	char *cur = *ptr;
+	*field = 0LL;
 
 more:
 	if (!(*cur >= '0' && *cur <= '9')) return -1;
@@ -93,31 +94,8 @@ more:
 		num = num * 10 + *cur - '0';
 		++cur;
 	} while (*cur >= '0' && *cur <= '9');
-	if (num >= 60) return -1;
-	*minutes |= 1LL << num;
-	if (*cur == ',') {
-		++cur;
-		goto more;
-	}
-
-	*ptr = cur;
-	return 0;
-}
-
-static int
-parse_hours(char **ptr, long *hours)
-{
-	char *cur = *ptr;
-
-more:
-	if (!(*cur >= '0' && *cur <= '9')) return -1;
-	unsigned int num = 0;
-	do {
-		num = num * 10 + *cur - '0';
-		++cur;
-	} while (*cur >= '0' && *cur <= '9');
-	if (num >= 24) return -1;
-	*hours |= 1L << num;
+	if (num >= limit) return -1;
+	*field |= 1ULL << num;
 	if (*cur == ',') {
 		++cur;
 		goto more;
@@ -131,10 +109,9 @@ static void
 parse_line(char *cur, int lineno)
 {
 	struct Job job;
+	long long field;
 
 	memset(&job, 0, sizeof(job));
-	job.mdays = ~0L;
-	job.months = ~0;
 	job.lineno = lineno;
 
 	skip_space(&cur);
@@ -143,9 +120,20 @@ parse_line(char *cur, int lineno)
 	if (*cur == '#') return;
 	if (*cur == '\n' || *cur == 0) return;
 	
-	if (parse_minutes(&cur, &job.minutes) < 0) goto bad_line;
+	if (parse_field(&cur, &field, 60) < 0) goto bad_line;
+	job.minutes = field;
+
 	skip_space(&cur);
-	if (parse_hours(&cur, &job.hours) < 0) goto bad_line;
+	if (parse_field(&cur, &field, 24) < 0) goto bad_line;
+	job.hours = field;
+
+	skip_space(&cur);
+	if (parse_field(&cur, &field, 32) < 0) goto bad_line;
+	job.mdays = field;
+
+	skip_space(&cur);
+	if (parse_field(&cur, &field, 12) < 0) goto bad_line;
+	job.months = field;
 
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
@@ -221,7 +209,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	if (!(init >> 1)) {
 		++tm.tm_min;
 		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
-		if (minutes_left != 0) {
+		if (minutes_left != 0LL) {
 			tm.tm_min = ffsll(minutes_left) - 1;
 			goto finished;
 		}
@@ -233,7 +221,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	if (!(init >> 2)) {
 		++tm.tm_hour;
 		long hours_left = job.hours & ~0UL << tm.tm_hour;
-		if (hours_left != 0) {
+		if (hours_left != 0L) {
 			tm.tm_hour = ffsl(hours_left) - 1;
 			goto finished;
 		}
@@ -274,6 +262,7 @@ update_job(struct Job *job, time_t now)
 	struct tm tm;
 
 	localtime_r(&now, &tm);
+	tm.tm_isdst = -1;
 	next_tm(*job, &tm);
 	job->time = mktime(&tm);
 	/* TODO what if job->time == (time_t) -1 here? */
