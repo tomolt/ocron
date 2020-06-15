@@ -6,10 +6,12 @@
 #include <sys/stat.h>
 #include <assert.h>
 #include <time.h>
+#include <syslog.h>
 
 #include <stdio.h>
 
 #define CRONTAB "crontab"
+#define LOG_IDENT "crond"
 
 struct Job
 {
@@ -32,17 +34,10 @@ die(const char *fmt, ...)
 	va_list ap;
 
 	va_start(ap, fmt);
-	vfprintf(stderr, fmt, ap);
+	vsyslog(LOG_EMERG, fmt, ap);
 	va_end(ap);
 
-	if (fmt[0] && fmt[strlen(fmt)-1] == ':') {
-		fputc(' ', stderr);
-		perror(NULL);
-	} else {
-		fputc('\n', stderr);
-	}
-
-	exit(1);
+	exit(EXIT_FAILURE);
 }
 
 static char *
@@ -54,9 +49,9 @@ read_file(const char *filename)
 	int fd;
 
 	fd = open(filename, O_RDONLY);
-	if (fd < 0) die("Can't open crontab:");
+	if (fd < 0) die("Can't open crontab: %m");
 
-	if (fstat(fd, &info) < 0) die("Can't stat crontab:");
+	if (fstat(fd, &info) < 0) die("Can't stat crontab: %m");
 
 	text = malloc(info.st_size + 1);
 	if (text == NULL) die("Can't allocate enough memory.");
@@ -64,7 +59,7 @@ read_file(const char *filename)
 
 	while (off < info.st_size) {
 		ret = read(fd, text + off, info.st_size - off);
-		if (ret < 0) die("Can't read crontab:");
+		if (ret < 0) die("Can't read crontab: %m");
 		off += ret;
 	}
 
@@ -161,13 +156,13 @@ parse_line(char *cur, int lineno)
 	if (numJobs >= capJobs) {
 		capJobs *= 2;
 		jobs = reallocarray(jobs, capJobs, sizeof(jobs[0]));
-		if (jobs == NULL) die("Can't allocate memory for jobs:");
+		if (jobs == NULL) die("Can't allocate memory for jobs.");
 	}
 	jobs[numJobs++] = job;
 	return;
 
 bad_line:
-	fprintf(stderr, "Line %d will be ignored because of bad syntax.\n", lineno);
+	syslog(LOG_WARNING, "Line %d will be ignored because of bad syntax.\n", lineno);
 }
 
 static void
@@ -294,9 +289,11 @@ update_job(struct Job *job, time_t now)
 int
 main()
 {
+	openlog(LOG_IDENT, LOG_CONS, LOG_CRON);
+
 	capJobs = 4;
 	jobs = calloc(capJobs, sizeof(jobs[0]));
-	if (jobs == NULL) die("Can't allocate memory for jobs:");
+	if (jobs == NULL) die("Can't allocate memory for jobs.");
 
 	parse_table(CRONTAB);
 
