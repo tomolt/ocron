@@ -219,8 +219,22 @@ skip_space(void)
 }
 
 static int
+parse_number(unsigned int *number)
+{
+	unsigned int num = 0;
+	if (!(*text >= '0' && *text <= '9')) return -1;
+	do {
+		num = num * 10 + *text++ - '0';
+	} while (*text >= '0' && *text <= '9');
+	*number = num;
+	return 0;
+}
+
+static int
 parse_field(long long *field, unsigned int limit)
 {
+	unsigned int num;
+
 	*field = 0LL;
 
 	if (*text == '*') {
@@ -229,12 +243,7 @@ parse_field(long long *field, unsigned int limit)
 	}
 
 more:
-	if (!(*text >= '0' && *text <= '9')) return -1;
-	unsigned int num = 0;
-	do {
-		num = num * 10 + *text - '0';
-		++text;
-	} while (*text >= '0' && *text <= '9');
+	if (parse_number(&num) < 0) return -1;
 	if (num >= limit) return -1;
 	*field |= 1ULL << num;
 	if (*text == ',') {
