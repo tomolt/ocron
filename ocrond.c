@@ -28,6 +28,8 @@ static int capJobs;
 static int numJobs;
 static struct Job *jobs;
 
+static char *text;
+
 /* General utility functions. */
 
 static void
@@ -205,51 +207,46 @@ read_file(const char *filename)
 }
 
 static int
-skip_space(char **ptr)
+skip_space(void)
 {
-	char *cur = *ptr;
-	if (!(*cur == ' ' || *cur == '\t' || *cur == '\r')) {
+	if (!(*text == ' ' || *text == '\t' || *text == '\r')) {
 		return -1;
 	}
 	do {
-		++cur;
-	} while (*cur == ' ' || *cur == '\t' || *cur == '\r');
-	*ptr = cur;
+		++text;
+	} while (*text == ' ' || *text == '\t' || *text == '\r');
 	return 0;
 }
 
 static int
-parse_field(char **ptr, long long *field, unsigned int limit)
+parse_field(long long *field, unsigned int limit)
 {
-	char *cur = *ptr;
 	*field = 0LL;
 
-	if (*cur == '*') {
-		++cur;
-		goto finished;
+	if (*text == '*') {
+		++text;
+		return 0;
 	}
 
 more:
-	if (!(*cur >= '0' && *cur <= '9')) return -1;
+	if (!(*text >= '0' && *text <= '9')) return -1;
 	unsigned int num = 0;
 	do {
-		num = num * 10 + *cur - '0';
-		++cur;
-	} while (*cur >= '0' && *cur <= '9');
+		num = num * 10 + *text - '0';
+		++text;
+	} while (*text >= '0' && *text <= '9');
 	if (num >= limit) return -1;
 	*field |= 1ULL << num;
-	if (*cur == ',') {
-		++cur;
+	if (*text == ',') {
+		++text;
 		goto more;
 	}
 
-finished:
-	*ptr = cur;
 	return 0;
 }
 
 static void
-parse_line(char *cur, int lineno)
+parse_line(int lineno)
 {
 	struct Job job;
 	long long field;
@@ -258,30 +255,30 @@ parse_line(char *cur, int lineno)
 	job.lineno = lineno;
 
 	/* We don't care if we actually find spaces here or not. */
-	skip_space(&cur);
+	skip_space();
 	
 	/* Dismiss empty lines and comments. */
-	if (*cur == '#') return;
-	if (*cur == '\n' || *cur == 0) return;
+	if (*text == '#') return;
+	if (*text == '\n' || *text == 0) return;
 	
-	if (parse_field(&cur, &field, 60) < 0) goto bad_line;
+	if (parse_field(&field, 60) < 0) goto bad_line;
 	job.minutes = field ? field : ~0LL;
 
-	if (skip_space(&cur) < 0) goto bad_line;
-	if (parse_field(&cur, &field, 24) < 0) goto bad_line;
+	if (skip_space() < 0) goto bad_line;
+	if (parse_field(&field, 24) < 0) goto bad_line;
 	job.hours = field ? field : ~0L;
 
-	if (skip_space(&cur) < 0) goto bad_line;
-	if (parse_field(&cur, &field, 32) < 0) goto bad_line;
+	if (skip_space() < 0) goto bad_line;
+	if (parse_field(&field, 32) < 0) goto bad_line;
 	if (field & 1) goto bad_line;
 	job.mdays = field;
 
-	if (skip_space(&cur) < 0) goto bad_line;
-	if (parse_field(&cur, &field, 12) < 0) goto bad_line;
+	if (skip_space() < 0) goto bad_line;
+	if (parse_field(&field, 12) < 0) goto bad_line;
 	job.months = field ? field : ~0;
 
-	if (skip_space(&cur) < 0) goto bad_line;
-	if (parse_field(&cur, &field, 7) < 0) goto bad_line;
+	if (skip_space() < 0) goto bad_line;
+	if (parse_field(&field, 7) < 0) goto bad_line;
 	job.wdays = field;
 
 	if (!job.mdays && !job.wdays) {
@@ -304,19 +301,21 @@ bad_line:
 static void
 parse_table(const char *filename)
 {
-	char *text, *ptr, *eol;
+	char *contents, *line, *eol;
 	int lineno = 1;
 
-	text = read_file(filename);
-	ptr = text;
+	contents = read_file(filename);
+	line = contents;
 	for (;;) {
-		parse_line(ptr, lineno);
-		eol = strchr(ptr, '\n');
+		text = line;
+		parse_line(lineno);
+		eol = strchr(line, '\n');
 		if (eol == NULL) break;
-		ptr = eol + 1;
+		line = eol + 1;
 		++lineno;
 	}
-	free(text);
+	free(contents);
+	text = NULL;
 }
 
 /* The main loop. */
