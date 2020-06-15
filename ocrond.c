@@ -28,6 +28,8 @@ static int capJobs;
 static int numJobs;
 static struct Job *jobs;
 
+/* General utility functions. */
+
 static void
 die(const char *fmt, ...)
 {
@@ -39,6 +41,140 @@ die(const char *fmt, ...)
 
 	exit(EXIT_FAILURE);
 }
+
+/* (Gregorian) calendar awareness. */
+
+static int
+leap_year(int year)
+{
+	if (year % 4 != 0) return 0;
+	if (year % 400 == 0) return 1;
+	return year % 100 != 0;
+}
+
+static int
+days_in_month(int month, int year)
+{
+	assert(month >= 0 && month < 12);
+	if (month != 1) {
+		return 30 + ((month % 7 + 1) & 1);
+	} else {
+		return 28 + leap_year(year);
+	}
+}
+
+/* Job time-finding algorithm. */
+
+static unsigned int
+check_tm(struct Job job, struct tm tm)
+{
+	unsigned int ret = 0;
+	if (!(job.minutes >> tm.tm_min  & 1)) ret |= 1;
+	if (!(job.hours   >> tm.tm_hour & 1)) ret |= 2;
+	if (!(job.mdays   >> tm.tm_mday & 1) &&
+		!(job.wdays   >> tm.tm_wday & 1)) ret |= 4;
+	if (!(job.months  >> tm.tm_mon  & 1)) ret |= 8;
+	return ret;
+}
+
+static void
+next_tm(struct Job job, struct tm *tm_ptr)
+{
+	struct tm tm = *tm_ptr;
+	tm.tm_sec = 0;
+
+	unsigned int init = check_tm(job, tm);
+
+	/* Determine minute, and exit early if possible. */
+	assert(job.minutes != 0);
+	if (!(init >> 1)) {
+		++tm.tm_min;
+		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
+		if (minutes_left != 0LL) {
+			tm.tm_min = ffsll(minutes_left) - 1;
+			goto finished;
+		}
+	}
+	tm.tm_min = ffsll(job.minutes) - 1;
+
+	/* Determine hour, and exit early if possible. */
+	assert(job.hours != 0);
+	if (!(init >> 2)) {
+		++tm.tm_hour;
+		long hours_left = job.hours & ~0UL << tm.tm_hour;
+		if (hours_left != 0L) {
+			tm.tm_hour = ffsl(hours_left) - 1;
+			goto finished;
+		}
+	}
+	tm.tm_hour = ffsl(job.hours) - 1;
+
+	/* Determine day, month, and year. */
+	do {
+		++tm.tm_mday;
+		if (tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
+			tm.tm_mday = 1;
+			++tm.tm_mon;
+			if (tm.tm_mon >= 12) {
+				tm.tm_mon = 0;
+				++tm.tm_year;
+			}
+		}
+		tm.tm_wday = (tm.tm_wday + 1) % 7;
+	} while (check_tm(job, tm) >> 2);
+
+finished:
+	*tm_ptr = tm;
+}
+
+/* Job queue operations. */
+
+static void
+heapify_jobs(int idx)
+{
+	struct Job tmp;
+	int left, right, min;
+	for (;;) {
+		left = 2 * idx + 1;
+		right = left + 1;
+		min = idx;
+		if (left < numJobs && jobs[left].time < jobs[min].time) {
+			min = left;
+		}
+		if (right < numJobs && jobs[right].time < jobs[min].time) {
+			min = right;
+		}
+		if (min == idx) return;
+		tmp = jobs[idx];
+		jobs[idx] = jobs[min];
+		jobs[min] = tmp;
+		idx = min;
+	}
+}
+
+static void
+update_job(int idx, time_t now)
+{
+	struct tm tm;
+	localtime_r(&now, &tm);
+	tm.tm_isdst = -1;
+	next_tm(jobs[idx], &tm);
+	jobs[idx].time = mktime(&tm);
+}
+
+static void
+init_jobs(time_t now)
+{
+	int i;
+	for (i = 0; i < numJobs; ++i) {
+		update_job(i, now);
+	}
+	for (i = numJobs / 2 - 1; i >= 0; --i) {
+		heapify_jobs(i);
+	}
+}
+
+/* Crontab parsing. */
 
 static char *
 read_file(const char *filename)
@@ -183,108 +319,7 @@ parse_table(const char *filename)
 	free(text);
 }
 
-static int
-leap_year(int year)
-{
-	if (year % 4 != 0) return 0;
-	if (year % 400 == 0) return 1;
-	return year % 100 != 0;
-}
-
-static int
-days_in_month(int month, int year)
-{
-	assert(month >= 0 && month < 12);
-	if (month != 1) {
-		return 30 + ((month % 7 + 1) & 1);
-	} else {
-		return 28 + leap_year(year);
-	}
-}
-
-static unsigned int
-check_tm(struct Job job, struct tm tm)
-{
-	unsigned int ret = 0;
-	if (!(job.minutes >> tm.tm_min  & 1)) ret |= 1;
-	if (!(job.hours   >> tm.tm_hour & 1)) ret |= 2;
-	if (!(job.mdays   >> tm.tm_mday & 1) &&
-		!(job.wdays   >> tm.tm_wday & 1)) ret |= 4;
-	if (!(job.months  >> tm.tm_mon  & 1)) ret |= 8;
-	return ret;
-}
-
-static void
-next_tm(struct Job job, struct tm *tm_ptr)
-{
-	struct tm tm = *tm_ptr;
-	tm.tm_sec = 0;
-
-	unsigned int init = check_tm(job, tm);
-
-	/* Determine minute, and exit early if possible. */
-	assert(job.minutes != 0);
-	if (!(init >> 1)) {
-		++tm.tm_min;
-		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
-		if (minutes_left != 0LL) {
-			tm.tm_min = ffsll(minutes_left) - 1;
-			goto finished;
-		}
-	}
-	tm.tm_min = ffsll(job.minutes) - 1;
-
-	/* Determine hour, and exit early if possible. */
-	assert(job.hours != 0);
-	if (!(init >> 2)) {
-		++tm.tm_hour;
-		long hours_left = job.hours & ~0UL << tm.tm_hour;
-		if (hours_left != 0L) {
-			tm.tm_hour = ffsl(hours_left) - 1;
-			goto finished;
-		}
-	}
-	tm.tm_hour = ffsl(job.hours) - 1;
-
-	/* Determine day, month, and year. */
-	do {
-		++tm.tm_mday;
-		if (tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
-			tm.tm_mday = 1;
-			++tm.tm_mon;
-			if (tm.tm_mon >= 12) {
-				tm.tm_mon = 0;
-				++tm.tm_year;
-			}
-		}
-		tm.tm_wday = (tm.tm_wday + 1) % 7;
-	} while (check_tm(job, tm) >> 2);
-
-finished:
-	*tm_ptr = tm;
-}
-
-static int
-nearest_job(void)
-{
-	int j = 0;
-	for (int i = 1; i < numJobs; ++i) {
-		if (jobs[i].time < jobs[j].time) j = i;
-	}
-	return j;
-}
-
-static void
-update_job(struct Job *job, time_t now)
-{
-	struct tm tm;
-
-	localtime_r(&now, &tm);
-	tm.tm_isdst = -1;
-	next_tm(*job, &tm);
-	job->time = mktime(&tm);
-	/* TODO what if job->time == (time_t) -1 here? */
-}
+/* The main loop. */
 
 int
 main()
@@ -304,20 +339,17 @@ main()
 
 	time_t now;
 	time(&now);
-	for (int i = 0; i < numJobs; ++i) {
-		update_job(&jobs[i], now);
-	}
+	init_jobs(now);
 
 	for (int t = 0; t < 20; ++t) {
-		int j = nearest_job();
-
 		struct tm tm;
-		localtime_r(&jobs[j].time, &tm);
+		localtime_r(&jobs[0].time, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\t(%d)\n", buf, jobs[j].lineno);
+		printf("%s\t(%d)\n", buf, jobs[0].lineno);
 
-		update_job(&jobs[j], jobs[j].time);
+		update_job(0, jobs[0].time);
+		heapify_jobs(0);
 	}
 	return 0;
 }
