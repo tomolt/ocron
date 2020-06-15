@@ -17,7 +17,7 @@
 #define HOURS_MASK   0xFFFFFFL
 #define MDAYS_MASK   0xFFFFFFFEL
 #define MONTHS_MASK  0xFFF
-#define WDAYS_MASK   0x7F
+#define WDAYS_MASK   0xFF
 
 struct Job
 {
@@ -319,6 +319,7 @@ parse_line(int lineno)
 	if (skip_space() < 0) goto bad_line;
 	if (parse_field(&field) < 0) goto bad_line;
 	if ((field & WDAYS_MASK) != field) goto bad_line;
+	field |= field >> 7 & 1;
 	job.wdays = field;
 
 	if (!job.mdays && !job.wdays) {
