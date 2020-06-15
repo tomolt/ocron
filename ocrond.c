@@ -73,12 +73,18 @@ read_file(const char *filename)
 	return text;
 }
 
-static void
+static int
 skip_space(char **ptr)
 {
 	char *cur = *ptr;
-	while (*cur == ' ' || *cur == '\t' || *cur == '\r') ++cur;
+	if (!(*cur == ' ' || *cur == '\t' || *cur == '\r')) {
+		return -1;
+	}
+	do {
+		++cur;
+	} while (*cur == ' ' || *cur == '\t' || *cur == '\r');
 	*ptr = cur;
+	return 0;
 }
 
 static int
@@ -86,6 +92,11 @@ parse_field(char **ptr, long long *field, unsigned int limit)
 {
 	char *cur = *ptr;
 	*field = 0LL;
+
+	if (*cur == '*') {
+		++cur;
+		goto finished;
+	}
 
 more:
 	if (!(*cur >= '0' && *cur <= '9')) return -1;
@@ -101,6 +112,7 @@ more:
 		goto more;
 	}
 
+finished:
 	*ptr = cur;
 	return 0;
 }
@@ -114,6 +126,7 @@ parse_line(char *cur, int lineno)
 	memset(&job, 0, sizeof(job));
 	job.lineno = lineno;
 
+	/* We don't care if we actually find spaces here or not. */
 	skip_space(&cur);
 	
 	/* Dismiss empty lines and comments. */
@@ -121,23 +134,28 @@ parse_line(char *cur, int lineno)
 	if (*cur == '\n' || *cur == 0) return;
 	
 	if (parse_field(&cur, &field, 60) < 0) goto bad_line;
-	job.minutes = field;
+	job.minutes = field ? field : ~0LL;
 
-	skip_space(&cur);
+	if (skip_space(&cur) < 0) goto bad_line;
 	if (parse_field(&cur, &field, 24) < 0) goto bad_line;
-	job.hours = field;
+	job.hours = field ? field : ~0L;
 
-	skip_space(&cur);
+	if (skip_space(&cur) < 0) goto bad_line;
 	if (parse_field(&cur, &field, 32) < 0) goto bad_line;
+	if (field & 1) goto bad_line;
 	job.mdays = field;
 
-	skip_space(&cur);
+	if (skip_space(&cur) < 0) goto bad_line;
 	if (parse_field(&cur, &field, 12) < 0) goto bad_line;
-	job.months = field;
+	job.months = field ? field : ~0;
 
-	skip_space(&cur);
+	if (skip_space(&cur) < 0) goto bad_line;
 	if (parse_field(&cur, &field, 7) < 0) goto bad_line;
 	job.wdays = field;
+
+	if (!job.mdays && !job.wdays) {
+		job.mdays = ~0L;
+	}
 
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
