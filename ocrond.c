@@ -237,26 +237,42 @@ parse_number(unsigned int *number)
 }
 
 static int
-parse_field(long long *field)
+parse_range(long long *field)
 {
-	unsigned int num;
-
-	*field = 0LL;
-
 	if (*text == '*') {
 		++text;
 		return 0;
 	}
+	if (*text >= '0' && *text <= '9') {
+		unsigned int first, last;
+		if (parse_number(&first) < 0) return -1;
 
-more:
-	if (parse_number(&num) < 0) return -1;
-	if (num >= 64) return -1;
-	*field |= 1ULL << num;
-	if (*text == ',') {
-		++text;
-		goto more;
+		if (*text == '-') {
+			++text;
+			if (parse_number(&last) < 0) return -1;
+		} else {
+			last = first;
+		}
+
+		if (first >= 64) return -1;
+		if (last >= 64) return -1;
+		for (unsigned int i = first; i <= last; ++i) {
+			*field |= 1ULL << i;
+		}
+		return 0;
 	}
+	return -1;
+}
 
+static int
+parse_field(long long *field)
+{
+	*field = 0LL;
+	for (;;) {
+		if (parse_range(field) < 0) return -1;
+		if (*text != ',') break;
+		++text;
+	}
 	return 0;
 }
 
