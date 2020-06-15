@@ -18,7 +18,7 @@ struct Job
 	long hours;
 	long mdays;
 	short months;
-	/* short wdays; */
+	short wdays;
 	short lineno;
 };
 
@@ -135,6 +135,10 @@ parse_line(char *cur, int lineno)
 	if (parse_field(&cur, &field, 12) < 0) goto bad_line;
 	job.months = field;
 
+	skip_space(&cur);
+	if (parse_field(&cur, &field, 7) < 0) goto bad_line;
+	job.wdays = field;
+
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
 		capJobs *= 2;
@@ -191,7 +195,8 @@ check_tm(struct Job job, struct tm tm)
 	unsigned int ret = 0;
 	if (!(job.minutes >> tm.tm_min  & 1)) ret |= 1;
 	if (!(job.hours   >> tm.tm_hour & 1)) ret |= 2;
-	if (!(job.mdays   >> tm.tm_mday & 1)) ret |= 4;
+	if (!(job.mdays   >> tm.tm_mday & 1) &&
+		!(job.wdays   >> tm.tm_wday & 1)) ret |= 4;
 	if (!(job.months  >> tm.tm_mon  & 1)) ret |= 8;
 	return ret;
 }
@@ -295,7 +300,7 @@ main()
 		localtime_r(&jobs[j].time, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\t%d\n", buf, jobs[j].lineno);
+		printf("%s\t(%d)\n", buf, jobs[j].lineno);
 
 		update_job(&jobs[j], jobs[j].time);
 	}
