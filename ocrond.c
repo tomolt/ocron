@@ -19,6 +19,16 @@
 #define MONTHS_MASK  0xFFF
 #define WDAYS_MASK   0xFF
 
+static const char *no_aliases[] = { NULL };
+static const char *months_aliases[] = {
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL
+};
+static const char *wdays_aliases[] = {
+	"Sun", "Mon", "Tue", "Wed",
+	"Thu", "Fri", "Sat", NULL
+};
+
 struct Job
 {
 	time_t time;
@@ -48,6 +58,16 @@ die(const char *fmt, ...)
 	va_end(ap);
 
 	exit(EXIT_FAILURE);
+}
+
+static int
+has_prefix(const char *str, const char *pfx)
+{
+	while (*pfx) {
+		if ((*str | 0x20) != (*pfx | 0x20)) return 0;
+		++str, ++pfx;
+	}
+	return 1;
 }
 
 /* (Gregorian) calendar awareness. */
@@ -237,44 +257,59 @@ parse_number(unsigned int *number)
 }
 
 static int
-parse_range(long long *field)
+parse_value(const char *aliases[], unsigned int *number)
 {
-	if (*text == '*') {
-		++text;
+	if (*text >= '0' && *text <= '9') {
+		if (parse_number(number) < 0) return -1;
 		return 0;
 	}
-	if (*text >= '0' && *text <= '9') {
-		unsigned int first, last, step = 1;
-		if (parse_number(&first) < 0) return -1;
-		last = first;
-
-		if (*text == '-') {
-			++text;
-			if (parse_number(&last) < 0) return -1;
-
-			if (*text == '/') {
-				++text;
-				if (parse_number(&step) < 0) return -1;
-			}
+	for (unsigned int i = 0; aliases[i] != NULL; ++i) {
+		if (has_prefix(text, aliases[i])) {
+			text += strlen(aliases[i]);
+			*number = i;
+			return 0;
 		}
-
-		if (first >= 64) return -1;
-		if (last >= 64) return -1;
-		if (step < 1) return -1;
-		for (unsigned int i = first; i <= last; i += step) {
-			*field |= 1ULL << i;
-		}
-		return 0;
 	}
 	return -1;
 }
 
 static int
-parse_field(long long *field)
+parse_range(const char *aliases[], long long *field)
+{
+	if (*text == '*') {
+		++text;
+		return 0;
+	}
+
+	unsigned int first, last, step = 1;
+	if (parse_value(aliases, &first) < 0) return -1;
+	last = first;
+
+	if (*text == '-') {
+		++text;
+		if (parse_value(aliases, &last) < 0) return -1;
+
+		if (*text == '/') {
+			++text;
+			if (parse_number(&step) < 0) return -1;
+		}
+	}
+
+	if (first >= 64) return -1;
+	if (last >= 64) return -1;
+	if (step < 1) return -1;
+	for (unsigned int i = first; i <= last; i += step) {
+		*field |= 1ULL << i;
+	}
+	return 0;
+}
+
+static int
+parse_field(const char *aliases[], long long *field)
 {
 	*field = 0LL;
 	for (;;) {
-		if (parse_range(field) < 0) return -1;
+		if (parse_range(aliases, field) < 0) return -1;
 		if (*text != ',') break;
 		++text;
 	}
@@ -297,27 +332,27 @@ parse_line(int lineno)
 	if (*text == '#') return;
 	if (*text == '\n' || *text == 0) return;
 	
-	if (parse_field(&field) < 0) goto bad_line;
+	if (parse_field(no_aliases, &field) < 0) goto bad_line;
 	if ((field & MINUTES_MASK) != field) goto bad_line;
 	job.minutes = field ? field : ~0LL;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field) < 0) goto bad_line;
+	if (parse_field(no_aliases, &field) < 0) goto bad_line;
 	if ((field & HOURS_MASK) != field) goto bad_line;
 	job.hours = field ? field : ~0L;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field) < 0) goto bad_line;
+	if (parse_field(no_aliases, &field) < 0) goto bad_line;
 	if ((field & MDAYS_MASK) != field) goto bad_line;
 	job.mdays = field;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field) < 0) goto bad_line;
+	if (parse_field(months_aliases, &field) < 0) goto bad_line;
 	if ((field & MONTHS_MASK) != field) goto bad_line;
 	job.months = field ? field : ~0;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field) < 0) goto bad_line;
+	if (parse_field(wdays_aliases, &field) < 0) goto bad_line;
 	if ((field & WDAYS_MASK) != field) goto bad_line;
 	field |= field >> 7 & 1;
 	job.wdays = field;
