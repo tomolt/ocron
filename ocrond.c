@@ -13,7 +13,7 @@
 #define CRONTAB "crontab"
 #define LOG_IDENT "crond"
 
-#define MINUTES_MASK 0xFFFFFFFFFFFFFFLL
+#define MINUTES_MASK 0xFFFFFFFFFFFFFFFLL
 #define HOURS_MASK   0xFFFFFFL
 #define MDAYS_MASK   0xFFFFFFFEL
 #define MONTHS_MASK  0xFFF
@@ -244,19 +244,24 @@ parse_range(long long *field)
 		return 0;
 	}
 	if (*text >= '0' && *text <= '9') {
-		unsigned int first, last;
+		unsigned int first, last, step = 1;
 		if (parse_number(&first) < 0) return -1;
+		last = first;
 
 		if (*text == '-') {
 			++text;
 			if (parse_number(&last) < 0) return -1;
-		} else {
-			last = first;
+
+			if (*text == '/') {
+				++text;
+				if (parse_number(&step) < 0) return -1;
+			}
 		}
 
 		if (first >= 64) return -1;
 		if (last >= 64) return -1;
-		for (unsigned int i = first; i <= last; ++i) {
+		if (step < 1) return -1;
+		for (unsigned int i = first; i <= last; i += step) {
 			*field |= 1ULL << i;
 		}
 		return 0;
