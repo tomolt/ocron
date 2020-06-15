@@ -13,6 +13,12 @@
 #define CRONTAB "crontab"
 #define LOG_IDENT "crond"
 
+#define MINUTES_MASK 0xFFFFFFFFFFFFFFLL
+#define HOURS_MASK   0xFFFFFFL
+#define MDAYS_MASK   0xFFFFFFFEL
+#define MONTHS_MASK  0xFFF
+#define WDAYS_MASK   0x7F
+
 struct Job
 {
 	time_t time;
@@ -231,7 +237,7 @@ parse_number(unsigned int *number)
 }
 
 static int
-parse_field(long long *field, unsigned int limit)
+parse_field(long long *field)
 {
 	unsigned int num;
 
@@ -244,7 +250,7 @@ parse_field(long long *field, unsigned int limit)
 
 more:
 	if (parse_number(&num) < 0) return -1;
-	if (num >= limit) return -1;
+	if (num >= 64) return -1;
 	*field |= 1ULL << num;
 	if (*text == ',') {
 		++text;
@@ -270,24 +276,28 @@ parse_line(int lineno)
 	if (*text == '#') return;
 	if (*text == '\n' || *text == 0) return;
 	
-	if (parse_field(&field, 60) < 0) goto bad_line;
+	if (parse_field(&field) < 0) goto bad_line;
+	if ((field & MINUTES_MASK) != field) goto bad_line;
 	job.minutes = field ? field : ~0LL;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field, 24) < 0) goto bad_line;
+	if (parse_field(&field) < 0) goto bad_line;
+	if ((field & HOURS_MASK) != field) goto bad_line;
 	job.hours = field ? field : ~0L;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field, 32) < 0) goto bad_line;
-	if (field & 1) goto bad_line;
+	if (parse_field(&field) < 0) goto bad_line;
+	if ((field & MDAYS_MASK) != field) goto bad_line;
 	job.mdays = field;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field, 12) < 0) goto bad_line;
+	if (parse_field(&field) < 0) goto bad_line;
+	if ((field & MONTHS_MASK) != field) goto bad_line;
 	job.months = field ? field : ~0;
 
 	if (skip_space() < 0) goto bad_line;
-	if (parse_field(&field, 7) < 0) goto bad_line;
+	if (parse_field(&field) < 0) goto bad_line;
+	if ((field & WDAYS_MASK) != field) goto bad_line;
 	job.wdays = field;
 
 	if (!job.mdays && !job.wdays) {
