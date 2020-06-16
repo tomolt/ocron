@@ -13,9 +13,10 @@
 
 #define CRONTAB       "./crontab"
 #define CRON_D        "./cron.d"
+#define SHELL         "/bin/sh"
 #define LOGIDENT      "crond"
 #define STDIN_TEMP    "/tmp/crond.stdin.XXXXXX"
-#define SHELL         "/bin/sh"
+
 #define WAKEUP_PERIOD 60
 #define CATCHUP_LIMIT 60
 #define MAX_LOOKAHEAD 2000
@@ -148,7 +149,7 @@ update_job(int idx, time_t now)
 	struct Job job;
 	long long minutes_left;
 	long hours_left;
-	int today_alright, lookahead;
+	int today_alright, lookahead = 0;
 
 	job = jobs[idx];
 
@@ -185,7 +186,7 @@ update_job(int idx, time_t now)
 	/* Determine day, month, and year. */
 	do {
 		++lookahead;
-		if (lookahead > MAX_LOOKAHEAD) return -1;
+		if (lookahead > (MAX_LOOKAHEAD)) return -1;
 		++tm.tm_mday;
 		if (tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
 			tm.tm_mday = 1;
@@ -497,13 +498,16 @@ run_job(int idx)
 		inlen -= ret;
 		indata += ret;
 	}
+	lseek(infd, 0, SEEK_SET);
 	dup2(infd, STDIN_FILENO);
+	close(infd);
 
 	/* Divert stdout to /dev/null. */
 	/* TODO Write this into a log dir instead! */
 	outfd = open("/dev/null", O_WRONLY);
 	if (outfd < 0) die("open: %m");
 	dup2(outfd, STDOUT_FILENO);
+	close(outfd);
 
 	setpgid(0, 0);
 	execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
