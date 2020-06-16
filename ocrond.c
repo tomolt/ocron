@@ -16,8 +16,11 @@
 #define LOGIDENT      "crond"
 #define STDIN_TEMP    "/tmp/crond.stdin.XXXXXX"
 #define SHELL         "/bin/sh"
+#define WAKEUP_PERIOD 60
 #define CATCHUP_LIMIT 60
+#define MAX_LOOKAHEAD 2000
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
 #define VALID_HOUR(job, hour) ((job).hours >> (hour) & 1)
 #define VALID_MDAY(job, mday) ((job).mdays >> (mday) & 1)
@@ -138,14 +141,14 @@ read_file(const char *filename)
 
 /* Job time-finding algorithm. */
 
-static void
+static int
 update_job(int idx, time_t now)
 {
 	struct tm tm;
 	struct Job job;
 	long long minutes_left;
 	long hours_left;
-	int today_alright;
+	int today_alright, lookahead;
 
 	job = jobs[idx];
 
@@ -181,6 +184,8 @@ update_job(int idx, time_t now)
 
 	/* Determine day, month, and year. */
 	do {
+		++lookahead;
+		if (lookahead > MAX_LOOKAHEAD) return -1;
 		++tm.tm_mday;
 		if (tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
 			tm.tm_mday = 1;
@@ -195,6 +200,7 @@ update_job(int idx, time_t now)
 
 finished:
 	jobs[idx].time = mktime(&tm);
+	return 0;
 }
 
 /* Restoring the structure of the job queue. */
@@ -518,44 +524,55 @@ mention_next(void)
 int
 main()
 {
-	time_t now, target;
+	time_t now, target, start;
 	int i;
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	reap_children();
 	parse_everything();
-
-	if (numJobs == 0) {
-		syslog(LOG_DEBUG, "No jobs found. Idling indefinitely.");
-		for (;;) pause();
-	}
-
 	time(&now);
+
+recalculate:
 	for (i = 0; i < numJobs; ++i) {
-		update_job(i, now);
+		if (update_job(i, now) < 0) {
+			syslog(LOG_WARNING, "Job '%s' exceeded the maximum lookahead and will be ignored.", jobs[i].command);
+			jobs[i--] = jobs[--numJobs];
+		}
 	}
 	for (i = numJobs / 2 - 1; i >= 0; --i) {
 		heapify_jobs(i);
 	}
-
 	for (;;) {
+		if (!numJobs) {
+			syslog(LOG_DEBUG, "No jobs found. Idling indefinitely.");
+			pause();
+			continue;
+		}
+
 		mention_next();
 
-		/* FIXME Handle cases where the system clock gets set back significantly! */
 		target = jobs[0].time;
+		start = time(&now);
 		for (;;) {
-			time(&now);
+			if (now < start) {
+				syslog(LOG_NOTICE, "Detected that the system time was set back significantly. Recalculating.");
+				goto recalculate;
+			}
 			if (target <= now) break;
-			sleep(target - now);
+			sleep(MIN(target - now, (WAKEUP_PERIOD) * 60));
+			time(&now);
 		}
 
-		if (now - target < CATCHUP_LIMIT * 60) {
+		if (now - target < (CATCHUP_LIMIT) * 60) {
 			run_job(0);
 		} else {
-			syslog(LOG_WARNING, "Job '%s' had to be skipped because it was too far in the past. (Was the system time changed?)", jobs[0].command);
+			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far in the past. (Did the system time get set forward?)", jobs[0].command);
 		}
 
-		update_job(0, now);
+		if (update_job(0, now) < 0) {
+			syslog(LOG_WARNING, "Job '%s' exceeded the maximum lookahead and will be ignored.", jobs[i].command);
+			jobs[0] = jobs[--numJobs];
+		}
 		heapify_jobs(0);
 	}
 }
