@@ -9,6 +9,7 @@
 #include <syslog.h>
 #include <dirent.h>
 #include <errno.h>
+#include <signal.h>
 
 #include <stdio.h>
 
@@ -16,6 +17,8 @@
 #define CRON_D        "./cron.d"
 #define LOGIDENT      "crond"
 #define CATCHUP_LIMIT 60
+#define STDIN_TEMP    "/tmp/crond.stdin.XXXXXX"
+#define SHELL         "/bin/sh"
 
 #define MINUTES_MASK 0xFFFFFFFFFFFFFFFLL
 #define HOURS_MASK   0xFFFFFFL
@@ -451,10 +454,56 @@ parse_everything(void)
 
 /* The main loop. */
 
+static void
+run_job(int idx)
+{
+	/* Fork and return immediately in the parent process. */
+	pid_t pid = fork();
+	if (pid < 0) syslog(LOG_EMERG, "fork: %m");
+	if (pid != 0) return;
+
+	/* Write input data to a temporary file and make stdin point to it. */
+	char *inname = strdup(STDIN_TEMP);
+	if (inname == NULL) die("strdup: %m");
+	int infd = mkstemp(inname);
+	if (infd < 0) die("mkstemp: %m");
+	if (unlink(inname) < 0) die("unlink: %m");
+	char *indata = strchr(jobs[idx].command, 0) + 1;
+	size_t inlen = strlen(indata);
+	while (inlen > 0) {
+		ssize_t ret = write(infd, indata, inlen);
+		if (ret < 0) {
+			syslog(LOG_ERR, "write: %m");
+			exit(EXIT_FAILURE);
+		}
+		inlen -= ret;
+		indata += ret;
+	}
+	dup2(infd, STDIN_FILENO);
+
+	/* Divert stdout to /dev/null. */
+	/* TODO Write this into a log dir instead! */
+	int outfd = open("/dev/null", O_WRONLY);
+	if (outfd < 0) die("open: %m");
+	dup2(outfd, STDOUT_FILENO);
+
+	setpgid(0, 0);
+	execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
+	/* If we reach this code, execl() must have failed. */
+	die("execl: %m", jobs[idx].command);
+}
+
 int
 main()
 {
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
+
+	/* Reap any finished child processes automatically. */
+	struct sigaction ign;
+	ign.sa_handler = SIG_IGN;
+	sigemptyset(&ign.sa_mask);
+	ign.sa_flags = SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
+	sigaction(SIGCHLD, &ign, NULL);
 
 	capJobs = 4;
 	jobs = calloc(capJobs, sizeof(jobs[0]));
@@ -478,6 +527,7 @@ main()
 		strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
 		syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
 
+		/* FIXME Handle cases where the system clock gets set back significantly! */
 		time_t target = jobs[0].time;
 		for (;;) {
 			time(&now);
@@ -486,9 +536,9 @@ main()
 		}
 
 		if (now - target < CATCHUP_LIMIT) {
-			printf("%s\n", jobs[0].command);
+			run_job(0);
 		} else {
-			syslog(LOG_CRIT, "Job '%s' had to be skipped because it was too far in the past. (Was the system time changed?)", jobs[0].command);
+			syslog(LOG_WARNING, "Job '%s' had to be skipped because it was too far in the past. (Was the system time changed?)", jobs[0].command);
 		}
 		update_job(0, now);
 		heapify_jobs(0);

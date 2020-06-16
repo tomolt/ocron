@@ -1,6 +1,7 @@
 CC=gcc
 LD=gcc
-CFLAGS=-pedantic -Wall -Wextra
+# NOTE -pedantic gives false positive warnings about syslog(), so we won't use it.
+CFLAGS=-Wall -Wextra
 LDFLAGS=-g
 RM=rm -f
 
