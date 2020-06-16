@@ -509,11 +509,14 @@ run_job(int idx)
 static void
 mention_next(void)
 {
-	char buf[100];
-	struct tm tm;
-	localtime_r(&jobs[0].time, &tm);
-	strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
-	syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
+	if (numJobs) {
+		char buf[100];
+		struct tm tm;
+		localtime_r(&jobs[0].time, &tm);
+		strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
+		syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
+	} else {
+	}
 }
 
 int
@@ -527,12 +530,11 @@ main()
 	parse_everything();
 
 	if (numJobs == 0) {
-		/* TODO lift this requirement by just permanently idling. */
-		die("Must have at least one job.");
+		syslog(LOG_DEBUG, "No jobs found. Idling indefinitely.");
+		for (;;) pause();
 	}
 
 	time(&now);
-
 	for (i = 0; i < numJobs; ++i) {
 		update_job(i, now);
 	}
