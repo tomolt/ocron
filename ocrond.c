@@ -7,10 +7,13 @@
 #include <assert.h>
 #include <time.h>
 #include <syslog.h>
+#include <dirent.h>
+#include <errno.h>
 
 #include <stdio.h>
 
-#define CRONTAB "crontab"
+#define CRONTAB   "./crontab"
+#define CRON_D    "./cron.d"
 #define LOG_IDENT "crond"
 
 #define MINUTES_MASK 0xFFFFFFFFFFFFFFFLL
@@ -26,7 +29,6 @@
 #define VALID_DAY(job, mday, wday) (VALID_MDAY(job, mday) || VALID_WDAY(job, wday))
 #define VALID_MONTH(job, month) ((job).months >> (month) & 1)
 #define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
-
 
 static const char *no_aliases[] = { NULL };
 static const char *months_aliases[] = {
@@ -200,9 +202,9 @@ read_file(const char *filename)
 	int fd;
 
 	fd = open(filename, O_RDONLY);
-	if (fd < 0) die("Can't open crontab: %m");
+	if (fd < 0) die("Can't open %s: %m", filename);
 
-	if (fstat(fd, &info) < 0) die("Can't stat crontab: %m");
+	if (fstat(fd, &info) < 0) die("Can't stat %s: %m", filename);
 
 	text = malloc(info.st_size + 1);
 	if (text == NULL) die("Can't allocate enough memory.");
@@ -210,7 +212,7 @@ read_file(const char *filename)
 
 	while (off < info.st_size) {
 		ret = read(fd, text + off, info.st_size - off);
-		if (ret < 0) die("Can't read crontab: %m");
+		if (ret < 0) die("Can't read %s: %m", filename);
 		off += ret;
 	}
 
@@ -304,7 +306,7 @@ parse_field(const char *aliases[], long long *field)
 }
 
 static void
-parse_line(int lineno)
+parse_line(const char *filename, int lineno)
 {
 	struct Job job;
 	long long field;
@@ -358,11 +360,11 @@ parse_line(int lineno)
 	return;
 
 bad_line:
-	syslog(LOG_WARNING, "Line %d will be ignored because of bad syntax.\n", lineno);
+	syslog(LOG_WARNING, "Line %d of %s will be ignored because of bad syntax.\n", lineno, filename);
 }
 
 static void
-parse_table(const char *filename)
+parse_file(const char *filename)
 {
 	char *contents, *line, *eol;
 	int lineno = 1;
@@ -371,14 +373,38 @@ parse_table(const char *filename)
 	line = contents;
 	for (;;) {
 		text = line;
-		parse_line(lineno);
+		parse_line(filename, lineno);
 		eol = strchr(line, '\n');
 		if (eol == NULL) break;
 		line = eol + 1;
 		++lineno;
 	}
-	free(contents);
 	text = NULL;
+	free(contents);
+}
+
+static void
+parse_everything(void)
+{
+	/* Yes, there's a race condition here, but all you can achieve with it
+	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
+	if (access(CRONTAB, F_OK) > 0) {
+		parse_file(CRONTAB);
+	}
+
+	DIR *dir;
+	if ((dir = opendir(CRON_D)) != NULL) {
+		for (;;) {
+			errno = 0;
+			struct dirent *ent = readdir(dir);
+			if (ent == NULL) {
+				if (errno) die("Couldn't walk %s: %m", CRON_D);
+				else break;
+			}
+			parse_file(ent->d_name);
+		}
+		closedir(dir);
+	}
 }
 
 /* The main loop. */
@@ -392,7 +418,7 @@ main()
 	jobs = calloc(capJobs, sizeof(jobs[0]));
 	if (jobs == NULL) die("Can't allocate memory for jobs.");
 
-	parse_table(CRONTAB);
+	parse_everything();
 
 	if (numJobs == 0) {
 		/* TODO lift this requirement by just permanently idling. */
