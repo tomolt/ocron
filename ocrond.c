@@ -1,17 +1,15 @@
-#include <stdlib.h>
-#include <stdarg.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/stat.h>
 #include <assert.h>
-#include <time.h>
-#include <syslog.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
-
-#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <syslog.h>
+#include <time.h>
+#include <unistd.h>
 
 #define CRONTAB       "./crontab"
 #define CRON_D        "./cron.d"
@@ -244,6 +242,16 @@ read_file(const char *filename)
 }
 
 static int
+eat_char(char c)
+{
+	int r;
+	
+	r = *text == c;
+	if (r) ++text;
+	return r;
+}
+
+static int
 skip_space(void)
 {
 	if (!IS_SPACE(*text)) return -1;
@@ -288,20 +296,16 @@ parse_range(const char *aliases[], long long *field)
 {
 	unsigned int first, last, step = 1, i;
 
-	if (*text == '*') {
-		++text;
+	if (eat_char('*')) {
 		return 0;
 	}
 
 	if (parse_value(aliases, &first) < 0) return -1;
 	last = first;
 
-	if (*text == '-') {
-		++text;
+	if (eat_char('-')) {
 		if (parse_value(aliases, &last) < 0) return -1;
-
-		if (*text == '/') {
-			++text;
+		if (eat_char('/')) {
 			if (parse_number(&step) < 0) return -1;
 		}
 	}
@@ -319,11 +323,9 @@ static int
 parse_field(const char *aliases[], long long *field)
 {
 	*field = 0LL;
-	for (;;) {
+	do {
 		if (parse_range(aliases, field) < 0) return -1;
-		if (*text != ',') break;
-		++text;
-	}
+	} while (eat_char(','));
 	return 0;
 }
 
@@ -380,38 +382,38 @@ parse_line(void)
 	if (parse_field(no_aliases, &field) < 0) return -1;
 	if ((field & MINUTES_MASK) != field) return -1;
 	job.minutes = field ? field : ~0LL;
-
 	if (skip_space() < 0) return -1;
+
 	if (parse_field(no_aliases, &field) < 0) return -1;
 	if ((field & HOURS_MASK) != field) return -1;
 	job.hours = field ? field : ~0L;
-
 	if (skip_space() < 0) return -1;
+
 	if (parse_field(no_aliases, &field) < 0) return -1;
 	if ((field & MDAYS_MASK) != field) return -1;
 	job.mdays = field;
-
 	if (skip_space() < 0) return -1;
+
 	if (parse_field(months_aliases, &field) < 0) return -1;
 	if ((field & MONTHS_MASK) != field) return -1;
 	job.months = field ? field : ~0;
-
 	if (skip_space() < 0) return -1;
+
 	if (parse_field(wdays_aliases, &field) < 0) return -1;
 	if ((field & WDAYS_MASK) != field) return -1;
 	field |= field >> 7 & 1;
 	job.wdays = field;
+	if (skip_space() < 0) return -1;
 
 	if (!job.mdays && !job.wdays) {
 		job.mdays = ~0L;
 	}
 
-	if (skip_space() < 0) return -1;
 	if (parse_command(&job.command) < 0) return -1;
 
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
-		capJobs *= 2;
+		capJobs = capJobs ? 2 * capJobs : 4;
 		jobs = reallocarray(jobs, capJobs, sizeof(jobs[0]));
 		if (jobs == NULL) die("Can't allocate memory for jobs.");
 	}
@@ -528,10 +530,6 @@ main()
 	sigemptyset(&ign.sa_mask);
 	ign.sa_flags = SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
 	sigaction(SIGCHLD, &ign, NULL);
-
-	capJobs = 4;
-	jobs = calloc(capJobs, sizeof(jobs[0]));
-	if (jobs == NULL) die("Can't allocate memory for jobs.");
 
 	parse_everything();
 
