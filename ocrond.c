@@ -18,12 +18,6 @@
 #define SHELL         "/bin/sh"
 #define CATCHUP_LIMIT 60
 
-#define MINUTES_MASK 0xFFFFFFFFFFFFFFFLL
-#define HOURS_MASK   0xFFFFFFL
-#define MDAYS_MASK   0xFFFFFFFEL
-#define MONTHS_MASK  0xFFF
-#define WDAYS_MASK   0xFF
-
 #define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
 #define VALID_HOUR(job, hour) ((job).hours >> (hour) & 1)
 #define VALID_MDAY(job, mday) ((job).mdays >> (mday) & 1)
@@ -34,16 +28,6 @@
 #define IS_SPACE(c) ((c) == ' ' || (c) == '\t' || (c) == '\r')
 #define IS_DIGIT(c) ((c) >= '0' && (c) <= '9')
 
-static const char *no_aliases[] = { NULL };
-static const char *months_aliases[] = {
-	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL
-};
-static const char *wdays_aliases[] = {
-	"Sun", "Mon", "Tue", "Wed",
-	"Thu", "Fri", "Sat", NULL
-};
-
 struct Job
 {
 	time_t time;
@@ -53,6 +37,16 @@ struct Job
 	long mdays;
 	short months;
 	short wdays;
+};
+
+static const char *no_aliases[] = { NULL };
+static const char *months_aliases[] = {
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL
+};
+static const char *wdays_aliases[] = {
+	"Sun", "Mon", "Tue", "Wed",
+	"Thu", "Fri", "Sat", NULL
 };
 
 static int capJobs;
@@ -74,6 +68,16 @@ die(const char *fmt, ...)
 	va_end(ap);
 
 	exit(EXIT_FAILURE);
+}
+
+static void
+reap_children(void)
+{
+	struct sigaction ign;
+	ign.sa_handler = SIG_IGN;
+	sigemptyset(&ign.sa_mask);
+	ign.sa_flags = SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
+	sigaction(SIGCHLD, &ign, NULL);
 }
 
 static int
@@ -198,19 +202,6 @@ update_job(int idx, time_t now)
 	jobs[idx].time = mktime(&tm);
 }
 
-static void
-init_jobs(time_t now)
-{
-	int i;
-
-	for (i = 0; i < numJobs; ++i) {
-		update_job(i, now);
-	}
-	for (i = numJobs / 2 - 1; i >= 0; --i) {
-		heapify_jobs(i);
-	}
-}
-
 /* Crontab parsing. */
 
 static char *
@@ -260,9 +251,9 @@ skip_space(void)
 }
 
 static int
-parse_number(unsigned int *number)
+parse_number(int *number)
 {
-	unsigned int num = 0;
+	int num = 0;
 
 	if (!IS_DIGIT(*text)) return -1;
 	do {
@@ -273,9 +264,9 @@ parse_number(unsigned int *number)
 }
 
 static int
-parse_value(const char *aliases[], unsigned int *number)
+parse_value(const char *aliases[], int *number)
 {
-	unsigned int i;
+	int i;
 
 	if (IS_DIGIT(*text)) {
 		if (parse_number(number) < 0) return -1;
@@ -292,9 +283,9 @@ parse_value(const char *aliases[], unsigned int *number)
 }
 
 static int
-parse_range(const char *aliases[], long long *field)
+parse_range(int min, int max, const char *aliases[], long long *field)
 {
-	unsigned int first, last, step = 1, i;
+	int first, last, step = 1, i;
 
 	if (eat_char('*')) {
 		return 0;
@@ -310,8 +301,9 @@ parse_range(const char *aliases[], long long *field)
 		}
 	}
 
-	if (first >= 64) return -1;
-	if (last >= 64) return -1;
+	if (first > last) return -1;
+	if (first < min) return -1;
+	if (last > max) return -1;
 	if (step < 1) return -1;
 	for (i = first; i <= last; i += step) {
 		*field |= 1ULL << i;
@@ -320,11 +312,11 @@ parse_range(const char *aliases[], long long *field)
 }
 
 static int
-parse_field(const char *aliases[], long long *field)
+parse_field(int min, int max, const char *aliases[], long long *field)
 {
 	*field = 0LL;
 	do {
-		if (parse_range(aliases, field) < 0) return -1;
+		if (parse_range(min, max, aliases, field) < 0) return -1;
 	} while (eat_char(','));
 	return 0;
 }
@@ -379,32 +371,31 @@ parse_line(void)
 	if (*text == '#') return 0;
 	if (*text == '\n' || *text == 0) return 0;
 	
-	if (parse_field(no_aliases, &field) < 0) return -1;
-	if ((field & MINUTES_MASK) != field) return -1;
-	job.minutes = field ? field : ~0LL;
+	if (parse_field(0, 59, no_aliases, &field) < 0) return -1;
 	if (skip_space() < 0) return -1;
+	job.minutes = field;
 
-	if (parse_field(no_aliases, &field) < 0) return -1;
-	if ((field & HOURS_MASK) != field) return -1;
-	job.hours = field ? field : ~0L;
+	if (parse_field(0, 23, no_aliases, &field) < 0) return -1;
 	if (skip_space() < 0) return -1;
+	job.hours = field;
 
-	if (parse_field(no_aliases, &field) < 0) return -1;
-	if ((field & MDAYS_MASK) != field) return -1;
+	if (parse_field(1, 31, no_aliases, &field) < 0) return -1;
+	if (skip_space() < 0) return -1;
 	job.mdays = field;
-	if (skip_space() < 0) return -1;
 
-	if (parse_field(months_aliases, &field) < 0) return -1;
-	if ((field & MONTHS_MASK) != field) return -1;
-	job.months = field ? field : ~0;
+	if (parse_field(0, 11, months_aliases, &field) < 0) return -1;
 	if (skip_space() < 0) return -1;
+	job.months = field;
 
-	if (parse_field(wdays_aliases, &field) < 0) return -1;
-	if ((field & WDAYS_MASK) != field) return -1;
-	field |= field >> 7 & 1;
+	if (parse_field(0, 7, wdays_aliases, &field) < 0) return -1;
+	if (skip_space() < 0) return -1;
 	job.wdays = field;
-	if (skip_space() < 0) return -1;
 
+	/* Fill in unrestricted fields. */
+	if (!job.minutes) job.minutes = ~0LL;
+	if (!job.hours) job.hours = ~0L;
+	if (!job.months) job.months = ~0;
+	job.wdays |= job.wdays >> 7 & 1;
 	if (!job.mdays && !job.wdays) {
 		job.mdays = ~0L;
 	}
@@ -515,22 +506,24 @@ run_job(int idx)
 	die("execl: %m", jobs[idx].command);
 }
 
-int
-main()
+static void
+mention_next(void)
 {
 	char buf[100];
 	struct tm tm;
-	struct sigaction ign;
+	localtime_r(&jobs[0].time, &tm);
+	strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
+	syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
+}
+
+int
+main()
+{
 	time_t now, target;
+	int i;
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
-
-	/* Reap any finished child processes automatically. */
-	ign.sa_handler = SIG_IGN;
-	sigemptyset(&ign.sa_mask);
-	ign.sa_flags = SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
-	sigaction(SIGCHLD, &ign, NULL);
-
+	reap_children();
 	parse_everything();
 
 	if (numJobs == 0) {
@@ -539,12 +532,16 @@ main()
 	}
 
 	time(&now);
-	init_jobs(now);
+
+	for (i = 0; i < numJobs; ++i) {
+		update_job(i, now);
+	}
+	for (i = numJobs / 2 - 1; i >= 0; --i) {
+		heapify_jobs(i);
+	}
 
 	for (;;) {
-		localtime_r(&jobs[0].time, &tm);
-		strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
-		syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
+		mention_next();
 
 		/* FIXME Handle cases where the system clock gets set back significantly! */
 		target = jobs[0].time;
@@ -559,6 +556,7 @@ main()
 		} else {
 			syslog(LOG_WARNING, "Job '%s' had to be skipped because it was too far in the past. (Was the system time changed?)", jobs[0].command);
 		}
+
 		update_job(0, now);
 		heapify_jobs(0);
 	}
