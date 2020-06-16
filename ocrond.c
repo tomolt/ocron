@@ -19,6 +19,15 @@
 #define MONTHS_MASK  0xFFF
 #define WDAYS_MASK   0xFF
 
+#define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
+#define VALID_HOUR(job, hour) ((job).hours >> (hour) & 1)
+#define VALID_MDAY(job, mday) ((job).mdays >> (mday) & 1)
+#define VALID_WDAY(job, wday) ((job).wdays >> (wday) & 1)
+#define VALID_DAY(job, mday, wday) (VALID_MDAY(job, mday) || VALID_WDAY(job, wday))
+#define VALID_MONTH(job, month) ((job).months >> (month) & 1)
+#define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
+
+
 static const char *no_aliases[] = { NULL };
 static const char *months_aliases[] = {
 	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -70,16 +79,6 @@ has_prefix(const char *str, const char *pfx)
 	return 1;
 }
 
-/* (Gregorian) calendar awareness. */
-
-static int
-leap_year(int year)
-{
-	if (year % 4 != 0) return 0;
-	if (year % 400 == 0) return 1;
-	return year % 100 != 0;
-}
-
 static int
 days_in_month(int month, int year)
 {
@@ -87,35 +86,24 @@ days_in_month(int month, int year)
 	if (month != 1) {
 		return 30 + ((month % 7 + 1) & 1);
 	} else {
-		return 28 + leap_year(year);
+		return 28 + IS_LEAP_YEAR(year);
 	}
 }
 
 /* Job time-finding algorithm. */
-
-static unsigned int
-check_tm(struct Job job, struct tm tm)
-{
-	unsigned int ret = 0;
-	if (!(job.minutes >> tm.tm_min  & 1)) ret |= 1;
-	if (!(job.hours   >> tm.tm_hour & 1)) ret |= 2;
-	if (!(job.mdays   >> tm.tm_mday & 1) &&
-		!(job.wdays   >> tm.tm_wday & 1)) ret |= 4;
-	if (!(job.months  >> tm.tm_mon  & 1)) ret |= 8;
-	return ret;
-}
 
 static void
 next_tm(struct Job job, struct tm *tm_ptr)
 {
 	struct tm tm = *tm_ptr;
 	tm.tm_sec = 0;
+	tm.tm_isdst = -1;
 
-	unsigned int init = check_tm(job, tm);
+	int today_alright = VALID_DATE(job, tm.tm_mday, tm.tm_wday, tm.tm_mon);
 
 	/* Determine minute, and exit early if possible. */
 	assert(job.minutes != 0);
-	if (!(init >> 1)) {
+	if (today_alright && VALID_HOUR(job, tm.tm_hour)) {
 		++tm.tm_min;
 		long long minutes_left = job.minutes & ~0ULL << tm.tm_min;
 		if (minutes_left != 0LL) {
@@ -127,7 +115,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 
 	/* Determine hour, and exit early if possible. */
 	assert(job.hours != 0);
-	if (!(init >> 2)) {
+	if (today_alright) {
 		++tm.tm_hour;
 		long hours_left = job.hours & ~0UL << tm.tm_hour;
 		if (hours_left != 0L) {
@@ -149,7 +137,7 @@ next_tm(struct Job job, struct tm *tm_ptr)
 			}
 		}
 		tm.tm_wday = (tm.tm_wday + 1) % 7;
-	} while (check_tm(job, tm) >> 2);
+	} while (!VALID_DATE(job, tm.tm_mday, tm.tm_wday, tm.tm_mon));
 
 finished:
 	*tm_ptr = tm;
@@ -185,7 +173,6 @@ update_job(int idx, time_t now)
 {
 	struct tm tm;
 	localtime_r(&now, &tm);
-	tm.tm_isdst = -1;
 	next_tm(jobs[idx], &tm);
 	jobs[idx].time = mktime(&tm);
 }
