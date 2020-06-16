@@ -288,27 +288,35 @@ parse_range(int min, int max, const char *aliases[], long long *field)
 	int first, last, step = 1, i;
 
 	if (eat_char('*')) {
-		return 0;
-	}
-
-	if (parse_value(aliases, &first) < 0) return -1;
-	last = first;
-
-	if (eat_char('-')) {
-		if (parse_value(aliases, &last) < 0) return -1;
 		if (eat_char('/')) {
 			if (parse_number(&step) < 0) return -1;
+			if (step < 1) return -1;
+			for (i = min; i <= max; i += step) {
+				*field |= 1ULL << i;
+			}
 		}
-	}
 
-	if (first > last) return -1;
-	if (first < min) return -1;
-	if (last > max) return -1;
-	if (step < 1) return -1;
-	for (i = first; i <= last; i += step) {
-		*field |= 1ULL << i;
+		return 0;
+	} else {
+		if (parse_value(aliases, &first) < 0) return -1;
+		last = first;
+		if (eat_char('-')) {
+			if (parse_value(aliases, &last) < 0) return -1;
+			if (eat_char('/')) {
+				if (parse_number(&step) < 0) return -1;
+			}
+		}
+
+		if (first > last) return -1;
+		if (first < min) return -1;
+		if (last > max) return -1;
+		if (step < 1) return -1;
+		for (i = first; i <= last; i += step) {
+			*field |= 1ULL << i;
+		}
+
+		return 0;
 	}
-	return 0;
 }
 
 static int
@@ -318,6 +326,7 @@ parse_field(int min, int max, const char *aliases[], long long *field)
 	do {
 		if (parse_range(min, max, aliases, field) < 0) return -1;
 	} while (eat_char(','));
+	if (skip_space() < 0) return -1;
 	return 0;
 }
 
@@ -372,24 +381,21 @@ parse_line(void)
 	if (*text == '\n' || *text == 0) return 0;
 	
 	if (parse_field(0, 59, no_aliases, &field) < 0) return -1;
-	if (skip_space() < 0) return -1;
 	job.minutes = field;
 
 	if (parse_field(0, 23, no_aliases, &field) < 0) return -1;
-	if (skip_space() < 0) return -1;
 	job.hours = field;
 
 	if (parse_field(1, 31, no_aliases, &field) < 0) return -1;
-	if (skip_space() < 0) return -1;
 	job.mdays = field;
 
 	if (parse_field(0, 11, months_aliases, &field) < 0) return -1;
-	if (skip_space() < 0) return -1;
 	job.months = field;
 
 	if (parse_field(0, 7, wdays_aliases, &field) < 0) return -1;
-	if (skip_space() < 0) return -1;
 	job.wdays = field;
+
+	if (parse_command(&job.command) < 0) return -1;
 
 	/* Fill in unrestricted fields. */
 	if (!job.minutes) job.minutes = ~0LL;
@@ -399,8 +405,6 @@ parse_line(void)
 	if (!job.mdays && !job.wdays) {
 		job.mdays = ~0L;
 	}
-
-	if (parse_command(&job.command) < 0) return -1;
 
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
@@ -509,14 +513,11 @@ run_job(int idx)
 static void
 mention_next(void)
 {
-	if (numJobs) {
-		char buf[100];
-		struct tm tm;
-		localtime_r(&jobs[0].time, &tm);
-		strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
-		syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
-	} else {
-	}
+	char buf[100];
+	struct tm tm;
+	localtime_r(&jobs[0].time, &tm);
+	strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
+	syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
 }
 
 int
