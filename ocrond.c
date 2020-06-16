@@ -12,9 +12,10 @@
 
 #include <stdio.h>
 
-#define CRONTAB   "./crontab"
-#define CRON_D    "./cron.d"
-#define LOG_IDENT "crond"
+#define CRONTAB       "./crontab"
+#define CRON_D        "./cron.d"
+#define LOGIDENT      "crond"
+#define CATCHUP_LIMIT 60
 
 #define MINUTES_MASK 0xFFFFFFFFFFFFFFFLL
 #define HOURS_MASK   0xFFFFFFL
@@ -453,7 +454,7 @@ parse_everything(void)
 int
 main()
 {
-	openlog(LOG_IDENT, LOG_CONS, LOG_CRON);
+	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 
 	capJobs = 4;
 	jobs = calloc(capJobs, sizeof(jobs[0]));
@@ -470,15 +471,26 @@ main()
 	time(&now);
 	init_jobs(now);
 
-	for (int t = 0; t < 20; ++t) {
+	for (;;) {
 		struct tm tm;
 		localtime_r(&jobs[0].time, &tm);
 		char buf[100];
-		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\t%s\n", buf, jobs[0].command);
+		strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
+		syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
 
-		update_job(0, jobs[0].time);
+		time_t target = jobs[0].time;
+		for (;;) {
+			time(&now);
+			if (target <= now) break;
+			sleep(target - now);
+		}
+
+		if (now - target < CATCHUP_LIMIT) {
+			printf("%s\n", jobs[0].command);
+		} else {
+			syslog(LOG_CRIT, "Job '%s' had to be skipped because it was too far in the past. (Was the system time changed?)", jobs[0].command);
+		}
+		update_job(0, now);
 		heapify_jobs(0);
 	}
-	return 0;
 }
