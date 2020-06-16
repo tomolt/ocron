@@ -48,7 +48,6 @@ struct Job
 	long mdays;
 	short months;
 	short wdays;
-	short lineno;
 };
 
 static int capJobs;
@@ -312,7 +311,6 @@ parse_line(const char *filename, int lineno)
 	long long field;
 
 	memset(&job, 0, sizeof(job));
-	job.lineno = lineno;
 
 	/* We don't care if we actually find spaces here or not. */
 	skip_space();
@@ -388,7 +386,7 @@ parse_everything(void)
 {
 	/* Yes, there's a race condition here, but all you can achieve with it
 	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
-	if (access(CRONTAB, F_OK) > 0) {
+	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
 
@@ -434,7 +432,7 @@ main()
 		localtime_r(&jobs[0].time, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\t(%d)\n", buf, jobs[0].lineno);
+		printf("%s\n", buf);
 
 		update_job(0, jobs[0].time);
 		heapify_jobs(0);
