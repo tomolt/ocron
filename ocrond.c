@@ -44,6 +44,7 @@ struct Job
 {
 	time_t time;
 	long long minutes;
+	char *command;
 	long hours;
 	long mdays;
 	short months;
@@ -55,6 +56,7 @@ static int numJobs;
 static struct Job *jobs;
 
 static char *text;
+static char *eol;
 
 /* General utility functions. */
 
@@ -89,6 +91,13 @@ days_in_month(int month, int year)
 	} else {
 		return 28 + IS_LEAP_YEAR(year);
 	}
+}
+
+static char *
+find_eol(char *line)
+{
+	while (*line && *line != '\n') ++line;
+	return line;
 }
 
 /* Job time-finding algorithm. */
@@ -304,8 +313,41 @@ parse_field(const char *aliases[], long long *field)
 	return 0;
 }
 
-static void
-parse_line(const char *filename, int lineno)
+static int
+parse_command(char **command)
+{
+	/* Guard against empty commands. */
+	if (text >= eol) return -1;
+	
+	if ((*command = malloc(eol - text + 2)) == NULL) {
+		die("Can't allocate enough memory.");
+	}
+
+	/* Decode escaped string into its raw form. */
+	int esc = 0;
+	char *out = *command;
+	while (text < eol) {
+		char c = *text++;
+		if (c == '%') {
+			if (esc) --out;
+			else c = '\n';
+		}
+		*out++ = c;
+		esc = c == '\\';
+	}
+	/* NULL-terminate the string. */
+	*out++ = 0;
+	
+	/* Split command from stdin data. */
+	char *delim = strchr(*command, '\n');
+	if (delim == NULL) delim = out;
+	*delim = 0;
+
+	return 0;
+}
+
+static int
+parse_line(void)
 {
 	struct Job job;
 	long long field;
@@ -316,37 +358,40 @@ parse_line(const char *filename, int lineno)
 	skip_space();
 	
 	/* Dismiss empty lines and comments. */
-	if (*text == '#') return;
-	if (*text == '\n' || *text == 0) return;
+	if (*text == '#') return 0;
+	if (*text == '\n' || *text == 0) return 0;
 	
-	if (parse_field(no_aliases, &field) < 0) goto bad_line;
-	if ((field & MINUTES_MASK) != field) goto bad_line;
+	if (parse_field(no_aliases, &field) < 0) return -1;
+	if ((field & MINUTES_MASK) != field) return -1;
 	job.minutes = field ? field : ~0LL;
 
-	if (skip_space() < 0) goto bad_line;
-	if (parse_field(no_aliases, &field) < 0) goto bad_line;
-	if ((field & HOURS_MASK) != field) goto bad_line;
+	if (skip_space() < 0) return -1;
+	if (parse_field(no_aliases, &field) < 0) return -1;
+	if ((field & HOURS_MASK) != field) return -1;
 	job.hours = field ? field : ~0L;
 
-	if (skip_space() < 0) goto bad_line;
-	if (parse_field(no_aliases, &field) < 0) goto bad_line;
-	if ((field & MDAYS_MASK) != field) goto bad_line;
+	if (skip_space() < 0) return -1;
+	if (parse_field(no_aliases, &field) < 0) return -1;
+	if ((field & MDAYS_MASK) != field) return -1;
 	job.mdays = field;
 
-	if (skip_space() < 0) goto bad_line;
-	if (parse_field(months_aliases, &field) < 0) goto bad_line;
-	if ((field & MONTHS_MASK) != field) goto bad_line;
+	if (skip_space() < 0) return -1;
+	if (parse_field(months_aliases, &field) < 0) return -1;
+	if ((field & MONTHS_MASK) != field) return -1;
 	job.months = field ? field : ~0;
 
-	if (skip_space() < 0) goto bad_line;
-	if (parse_field(wdays_aliases, &field) < 0) goto bad_line;
-	if ((field & WDAYS_MASK) != field) goto bad_line;
+	if (skip_space() < 0) return -1;
+	if (parse_field(wdays_aliases, &field) < 0) return -1;
+	if ((field & WDAYS_MASK) != field) return -1;
 	field |= field >> 7 & 1;
 	job.wdays = field;
 
 	if (!job.mdays && !job.wdays) {
 		job.mdays = ~0L;
 	}
+
+	if (skip_space() < 0) return -1;
+	if (parse_command(&job.command) < 0) return -1;
 
 	/* Add the job to the list and we're done. */
 	if (numJobs >= capJobs) {
@@ -355,28 +400,26 @@ parse_line(const char *filename, int lineno)
 		if (jobs == NULL) die("Can't allocate memory for jobs.");
 	}
 	jobs[numJobs++] = job;
-	return;
 
-bad_line:
-	syslog(LOG_WARNING, "Line %d of %s will be ignored because of bad syntax.\n", lineno, filename);
+	return 0;
 }
 
 static void
 parse_file(const char *filename)
 {
-	char *contents, *line, *eol;
+	char *contents;
 	int lineno = 1;
 
 	contents = read_file(filename);
-	line = contents;
-	for (;;) {
-		text = line;
-		parse_line(filename, lineno);
-		eol = strchr(line, '\n');
-		if (eol == NULL) break;
-		line = eol + 1;
+	text = contents;
+	do {
+		eol = find_eol(text);
+		if (parse_line() < 0) {
+			syslog(LOG_WARNING, "Line %d of %s will be ignored because of bad syntax.\n", lineno, filename);
+		}
+		text = eol + 1;
 		++lineno;
-	}
+	} while (*eol);
 	text = NULL;
 	free(contents);
 }
@@ -432,7 +475,7 @@ main()
 		localtime_r(&jobs[0].time, &tm);
 		char buf[100];
 		strftime(buf, sizeof(buf), "%M%t%H%t%d%t%b%t%a%t(%Y)", &tm);
-		printf("%s\n", buf);
+		printf("%s\t%s\n", buf, jobs[0].command);
 
 		update_job(0, jobs[0].time);
 		heapify_jobs(0);
