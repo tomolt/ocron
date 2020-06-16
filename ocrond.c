@@ -108,17 +108,48 @@ find_eol(char *line)
 	return line;
 }
 
+static char *
+read_file(const char *filename)
+{
+	struct stat info;
+	char *contents;
+	ssize_t off = 0, ret;
+	int fd;
+
+	fd = open(filename, O_RDONLY);
+	if (fd < 0) die("Can't open %s: %m", filename);
+
+	if (fstat(fd, &info) < 0) die("Can't stat %s: %m", filename);
+
+	contents = malloc(info.st_size + 1);
+	if (contents == NULL) die("Can't allocate enough memory.");
+	contents[info.st_size] = 0;
+
+	while (off < info.st_size) {
+		ret = read(fd, contents + off, info.st_size - off);
+		if (ret < 0) die("Can't read %s: %m", filename);
+		off += ret;
+	}
+
+	close(fd);
+
+	return contents;
+}
+
 /* Job time-finding algorithm. */
 
 static void
-next_tm(struct Job job, struct tm *tm_ptr)
+update_job(int idx, time_t now)
 {
 	struct tm tm;
+	struct Job job;
 	long long minutes_left;
 	long hours_left;
 	int today_alright;
 
-	tm = *tm_ptr;
+	job = jobs[idx];
+
+	localtime_r(&now, &tm);
 	tm.tm_sec = 0;
 	tm.tm_isdst = -1;
 
@@ -163,10 +194,10 @@ next_tm(struct Job job, struct tm *tm_ptr)
 	} while (!VALID_DATE(job, tm.tm_mday, tm.tm_wday, tm.tm_mon));
 
 finished:
-	*tm_ptr = tm;
+	jobs[idx].time = mktime(&tm);
 }
 
-/* Job queue operations. */
+/* Restoring the structure of the job queue. */
 
 static void
 heapify_jobs(int idx)
@@ -192,45 +223,7 @@ heapify_jobs(int idx)
 	}
 }
 
-static void
-update_job(int idx, time_t now)
-{
-	struct tm tm;
-
-	localtime_r(&now, &tm);
-	next_tm(jobs[idx], &tm);
-	jobs[idx].time = mktime(&tm);
-}
-
 /* Crontab parsing. */
-
-static char *
-read_file(const char *filename)
-{
-	struct stat info;
-	char *contents;
-	ssize_t off = 0, ret;
-	int fd;
-
-	fd = open(filename, O_RDONLY);
-	if (fd < 0) die("Can't open %s: %m", filename);
-
-	if (fstat(fd, &info) < 0) die("Can't stat %s: %m", filename);
-
-	contents = malloc(info.st_size + 1);
-	if (contents == NULL) die("Can't allocate enough memory.");
-	contents[info.st_size] = 0;
-
-	while (off < info.st_size) {
-		ret = read(fd, contents + off, info.st_size - off);
-		if (ret < 0) die("Can't read %s: %m", filename);
-		off += ret;
-	}
-
-	close(fd);
-
-	return contents;
-}
 
 static int
 eat_char(char c)
@@ -260,6 +253,7 @@ parse_number(int *number)
 		num = num * 10 + *text++ - '0';
 	} while (IS_DIGIT(*text));
 	*number = num;
+
 	return 0;
 }
 
@@ -279,6 +273,7 @@ parse_value(const char *aliases[], int *number)
 			return 0;
 		}
 	}
+
 	return -1;
 }
 
