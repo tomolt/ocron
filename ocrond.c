@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <ctype.h>
-#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -25,8 +24,8 @@
 
 struct Job
 {
-	time_t time;
 	long long minutes;
+	time_t time;
 	char *command;
 	long hours;
 	long mdays;
@@ -44,11 +43,16 @@ static const char *wdays_aliases[] = {
 	"Thu", "Fri", "Sat", NULL
 };
 
+/* A queue containing all jobs. Implemented as a binary heap. */
 static int capJobs;
 static int numJobs;
 static struct Job *jobs;
 
+/* A pointer to the character that is currently examined
+ * by the crontab parser. Only used at startup. */
 static char *text;
+/* A pointer to the end of the line that we currently parse.
+ * Only used at startup. */
 static char *eol;
 
 /* General utility functions. */
@@ -430,47 +434,15 @@ parse_file(const char *filename)
 	free(contents);
 }
 
-static void
-parse_everything(void)
-{
-	DIR *dir;
-	struct dirent *ent;
-
-	/* Yes, there's a race condition here, but all you can achieve with it
-	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
-	if (!(access(CRONTAB, F_OK) < 0)) {
-		parse_file(CRONTAB);
-	}
-
-	if ((dir = opendir(CRON_D)) != NULL) {
-		for (;;) {
-			errno = 0;
-			ent = readdir(dir);
-			if (ent == NULL) {
-				if (errno) die("Couldn't walk %s: %m", CRON_D);
-				else break;
-			}
-			parse_file(ent->d_name);
-		}
-		closedir(dir);
-	}
-}
-
 /* The main loop. */
 
 static void
-run_job(int idx)
+fake_stdin(int idx)
 {
 	char *inname, *indata;
 	size_t inlen;
 	ssize_t ret;
-	pid_t pid;
-	int infd, outfd;
-
-	/* Fork and return immediately in the parent process. */
-	pid = fork();
-	if (pid < 0) syslog(LOG_EMERG, "fork: %m");
-	if (pid != 0) return;
+	int infd;
 
 	/* Write input data to a temporary file and make stdin point to it. */
 	inname = strdup(STDIN_TEMP);
@@ -492,28 +464,24 @@ run_job(int idx)
 	lseek(infd, 0, SEEK_SET);
 	dup2(infd, STDIN_FILENO);
 	close(infd);
+}
 
-	/* Divert stdout to /dev/null. */
-	/* TODO Write this into a log dir instead! */
-	outfd = open("/dev/null", O_WRONLY);
-	if (outfd < 0) die("open: %m");
-	dup2(outfd, STDOUT_FILENO);
-	close(outfd);
+static void
+run_job(int idx)
+{
+	pid_t pid;
+
+	/* Fork and return immediately in the parent process. */
+	pid = fork();
+	if (pid < 0) syslog(LOG_EMERG, "fork: %m");
+	if (pid != 0) return;
+
+	fake_stdin(idx);
 
 	setpgid(0, 0);
 	execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
 	/* If we reach this code, execl() must have failed. */
 	die("execl: %m", jobs[idx].command);
-}
-
-static void
-mention_next(void)
-{
-	char buf[100];
-	struct tm tm;
-	localtime_r(&jobs[0].time, &tm);
-	strftime(buf, sizeof(buf), "%H:%M, %d %b %Y", &tm);
-	syslog(LOG_DEBUG, "Next job will be run at %s.", buf);
 }
 
 int
@@ -524,7 +492,12 @@ main()
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	reap_children();
-	parse_everything();
+	/* Yes, there's a race condition here, but all you can achieve with it
+	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
+	if (!(access(CRONTAB, F_OK) < 0)) {
+		parse_file(CRONTAB);
+	}
+
 	time(&now);
 
 recalculate:
@@ -543,8 +516,6 @@ recalculate:
 			pause();
 			continue;
 		}
-
-		mention_next();
 
 		target = jobs[0].time;
 		start = time(&now);
