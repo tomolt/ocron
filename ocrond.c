@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -11,15 +12,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define CRONTAB       "./crontab"
-#define CRON_D        "./cron.d"
-#define SHELL         "/bin/sh"
-#define LOGIDENT      "crond"
-#define STDIN_TEMP    "/tmp/crond.stdin.XXXXXX"
-
-#define WAKEUP_PERIOD 60
-#define CATCHUP_LIMIT 60
-#define MAX_LOOKAHEAD 2000
+#include "config.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
@@ -29,8 +22,6 @@
 #define VALID_DAY(job, mday, wday) (VALID_MDAY(job, mday) || VALID_WDAY(job, wday))
 #define VALID_MONTH(job, month) ((job).months >> (month) & 1)
 #define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
-#define IS_SPACE(c) ((c) == ' ' || (c) == '\t' || (c) == '\r')
-#define IS_DIGIT(c) ((c) >= '0' && (c) <= '9')
 
 struct Job
 {
@@ -245,8 +236,8 @@ eat_char(char c)
 static int
 skip_space(void)
 {
-	if (!IS_SPACE(*text)) return -1;
-	do ++text; while (IS_SPACE(*text));
+	if (!isblank(*text)) return -1;
+	do ++text; while (isblank(*text));
 	return 0;
 }
 
@@ -255,10 +246,10 @@ parse_number(int *number)
 {
 	int num = 0;
 
-	if (!IS_DIGIT(*text)) return -1;
+	if (!isdigit(*text)) return -1;
 	do {
 		num = num * 10 + *text++ - '0';
-	} while (IS_DIGIT(*text));
+	} while (isdigit(*text));
 	*number = num;
 
 	return 0;
@@ -269,7 +260,7 @@ parse_value(const char *aliases[], int *number)
 {
 	int i;
 
-	if (IS_DIGIT(*text)) {
+	if (isdigit(*text)) {
 		if (parse_number(number) < 0) return -1;
 		return 0;
 	}

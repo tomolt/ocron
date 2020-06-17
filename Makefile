@@ -1,19 +1,17 @@
-CC=gcc
-LD=gcc
-# NOTE -pedantic gives false positive warnings about syslog(), so we won't use it.
-CFLAGS=-Wall -Wextra
-LDFLAGS=-g
-RM=rm -f
+include config.mk
 
 .PHONY: all clean
 
 all: ocrond
 
 clean:
-	$(RM) ocrond *.o
+	rm -f ocrond *.o
 
 ocrond: ocrond.o
 	$(LD) $(LDFLAGS) ocrond.o -o $@
 
-ocrond.o: ocrond.c
+ocrond.o: ocrond.c config.h
 	$(CC) $(CFLAGS) $(LDFLAGS) -c ocrond.c -o $@
+
+config.h: config.def.h
+	cp config.def.h $@
