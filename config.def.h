@@ -1,3 +1,4 @@
+/* See LICENSE file for copyright and license details. */
 
 #define CRONTAB       "/etc/crontab"
 #define CRON_D        "/etc/cron.d"
