@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -71,6 +72,14 @@ die(const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
+static void *
+emalloc(size_t size)
+{
+	void *mem;
+	if ((mem = malloc(size)) == NULL) die("Out of memory.");
+	return mem;
+}
+
 static void
 reap_children(void)
 {
@@ -122,8 +131,7 @@ read_file(const char *filename)
 
 	if (fstat(fd, &info) < 0) die("Can't stat %s: %m", filename);
 
-	contents = malloc(info.st_size + 1);
-	if (contents == NULL) die("Can't allocate enough memory.");
+	contents = emalloc(info.st_size + 1);
 	contents[info.st_size] = 0;
 
 	while (off < info.st_size) {
@@ -139,7 +147,7 @@ read_file(const char *filename)
 
 /* Job time-finding algorithm. */
 
-static int
+static void
 update_job(int idx, time_t now)
 {
 	struct tm tm;
@@ -182,23 +190,24 @@ update_job(int idx, time_t now)
 
 	/* Determine day, month, and year. */
 	do {
-		++lookahead;
-		if (lookahead > (MAX_LOOKAHEAD)) return -1;
-		++tm.tm_mday;
-		if (tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
+		if (++lookahead > (MAX_LOOKAHEAD)) {
+			syslog(LOG_WARNING, "Job '%s' exceeded the maximum lookahead and will be ignored.", job.command);
+			jobs[idx] = jobs[--numJobs];
+			return;
+		}
+
+		tm.tm_wday = (tm.tm_wday + 1) % 7;
+		if (++tm.tm_mday > days_in_month(tm.tm_mon, 1900 + tm.tm_year)) {
 			tm.tm_mday = 1;
-			++tm.tm_mon;
-			if (tm.tm_mon >= 12) {
+			if (++tm.tm_mon >= 12) {
 				tm.tm_mon = 0;
 				++tm.tm_year;
 			}
 		}
-		tm.tm_wday = (tm.tm_wday + 1) % 7;
 	} while (!VALID_DATE(job, tm.tm_mday, tm.tm_wday, tm.tm_mon));
 
 finished:
 	jobs[idx].time = mktime(&tm);
-	return 0;
 }
 
 /* Restoring the structure of the job queue. */
@@ -333,14 +342,12 @@ static int
 parse_command(char **command)
 {
 	int esc = 0;
-	char *out, c, *delim;
+	char *out, c;
 
 	/* Guard against empty commands. */
 	if (text >= eol) return -1;
 	
-	if ((*command = malloc(eol - text + 2)) == NULL) {
-		die("Can't allocate enough memory.");
-	}
+	*command = emalloc(eol - text + 2);
 
 	/* Decode escaped string into its raw form. */
 	out = *command;
@@ -357,9 +364,7 @@ parse_command(char **command)
 	*out++ = 0;
 	
 	/* Split command from stdin data. */
-	delim = strchr(*command, '\n');
-	if (delim == NULL) delim = out;
-	*delim = 0;
+	*find_eol(*command) = 0;
 
 	return 0;
 }
@@ -377,7 +382,7 @@ parse_line(void)
 	
 	/* Dismiss empty lines and comments. */
 	if (*text == '#') return 0;
-	if (*text == '\n' || *text == 0) return 0;
+	if (!*text || *text == '\n') return 0;
 	
 	if (parse_field(0, 59, no_aliases, &field) < 0) return -1;
 	job.minutes = field;
@@ -409,7 +414,7 @@ parse_line(void)
 	if (numJobs >= capJobs) {
 		capJobs = capJobs ? 2 * capJobs : 4;
 		jobs = reallocarray(jobs, capJobs, sizeof(jobs[0]));
-		if (jobs == NULL) die("Can't allocate memory for jobs.");
+		if (jobs == NULL) die("Out of memory.");
 	}
 	jobs[numJobs++] = job;
 
@@ -436,7 +441,7 @@ parse_file(const char *filename)
 	free(contents);
 }
 
-/* The main loop. */
+/* Job execution & main loop. */
 
 static void
 fake_stdin(int idx)
@@ -456,10 +461,7 @@ fake_stdin(int idx)
 	inlen = strlen(indata);
 	while (inlen > 0) {
 		ret = write(infd, indata, inlen);
-		if (ret < 0) {
-			syslog(LOG_ERR, "write: %m");
-			exit(EXIT_FAILURE);
-		}
+		if (ret < 0) die("write: %m");
 		inlen -= ret;
 		indata += ret;
 	}
@@ -500,18 +502,10 @@ main()
 		parse_file(CRONTAB);
 	}
 
-	time(&now);
-
 recalculate:
-	for (i = 0; i < numJobs; ++i) {
-		if (update_job(i, now) < 0) {
-			syslog(LOG_WARNING, "Job '%s' exceeded the maximum lookahead and will be ignored.", jobs[i].command);
-			jobs[i--] = jobs[--numJobs];
-		}
-	}
-	for (i = numJobs / 2 - 1; i >= 0; --i) {
-		heapify_jobs(i);
-	}
+	time(&now);
+	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
+	for (i = numJobs / 2 - 1; i >= 0; --i) heapify_jobs(i);
 	for (;;) {
 		if (!numJobs) {
 			syslog(LOG_DEBUG, "No jobs found. Idling indefinitely.");
@@ -526,7 +520,7 @@ recalculate:
 				syslog(LOG_NOTICE, "Detected that the system time was set back significantly. Recalculating.");
 				goto recalculate;
 			}
-			if (target <= now) break;
+			if (now >= target) break;
 			sleep(MIN(target - now, (WAKEUP_PERIOD) * 60));
 			time(&now);
 		}
@@ -534,13 +528,10 @@ recalculate:
 		if (now - target < (CATCHUP_LIMIT) * 60) {
 			run_job(0);
 		} else {
-			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far in the past. (Did the system time get set forward?)", jobs[0].command);
+			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far in the past. (Was the system time set forward?)", jobs[0].command);
 		}
 
-		if (update_job(0, now) < 0) {
-			syslog(LOG_WARNING, "Job '%s' exceeded the maximum lookahead and will be ignored.", jobs[i].command);
-			jobs[0] = jobs[--numJobs];
-		}
+		update_job(0, now);
 		heapify_jobs(0);
 	}
 }
