@@ -7,7 +7,7 @@ include config.mk
 all: ocrond
 
 clean:
-	rm -f ocrond *.o
+	rm -f ocrond ocrond.o
 
 install: ocrond
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
