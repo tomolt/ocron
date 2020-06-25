@@ -6,3 +6,4 @@ LD=cc
 CFLAGS=-Os -Wall -Wextra
 LDFLAGS=-Os
 
+PREFIX = /usr/local

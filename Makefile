@@ -2,12 +2,20 @@
 
 include config.mk
 
-.PHONY: all clean
+.PHONY: all clean install uninstall
 
 all: ocrond
 
 clean:
 	rm -f ocrond *.o
+
+install: ocrond
+	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
+	cp -f ocrond "$(DESTDIR)$(PREFIX)/bin"
+	chmod 755 "$(DESTDIR)$(PREFIX)/bin/ocrond"
+
+uninstall:
+	rm -f "$(DESTDIR)$(PREFIX)/bin/ocrond"
 
 ocrond: ocrond.o
 	$(LD) $(LDFLAGS) ocrond.o -o $@
