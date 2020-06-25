@@ -15,9 +15,9 @@ Also, it looks like **ocron** uses quite a bit less memory than other cron imple
 
 - Both comments and blank lines are allowed.
 - Rules are of the following form:
-```
-minutes   hours   month-days   months   week-days   command
-```
+  ```
+  minutes   hours   month-days   months   week-days   command
+  ```
 - In the first 5 fields, '\*' means that the field is unspecified, '-' can be used for inclusive ranges, and a '/' after a '\*' or after a range specifies a period.
 - For the months and week-days fields, 3-letter case-insensitive aliases may be used (for example: `Jan`, `JUL`, `aug`).
 - In the week-days field, 0 and 7 both mean Sunday.
