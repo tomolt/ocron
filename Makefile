@@ -10,9 +10,14 @@ clean:
 	rm -f ocrond ocrond.o
 
 install: ocrond
+	# ocrond
 	mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	cp -f ocrond "$(DESTDIR)$(PREFIX)/bin"
 	chmod 755 "$(DESTDIR)$(PREFIX)/bin/ocrond"
+	# ocron.1
+	mkdir -p "$(DESTDIR)$(MANPREFIX)/man1"
+	cp -f ocron.1 "$(DESTDIR)$(MANPREFIX)/man1"
+	chmod 644 "$(DESTDIR)$(MANPREFIX)/man1/ocron.1"
 
 uninstall:
 	rm -f "$(DESTDIR)$(PREFIX)/bin/ocrond"

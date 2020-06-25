@@ -1,0 +1,54 @@
+.Dd June 25, 2020
+.Dt OCRON 1
+.Os
+.Sh NAME
+.Nm ocron
+.Nd cron daemon
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Nm
+schedules commands to be run at specified dates and times.
+.Sh CONFIGURATION
+Configuration is done by editing the
+.Pa /etc/crontab
+file.
+.sp
+.Nm
+understands all the usual syntax features and common extensions that you've come to expect from a cron daemon:
+.Bl -bullet
+.It
+Both comments and blank lines are allowed.
+.It
+Rules are of the following form:
+.Bl -column "minutes___" "hours___" "month-days___" "months___" "week-days___" "command___"
+.It "minutes" Ta "hours" Ta "month-days" Ta "months" Ta "week-days" Ta "command"
+.El
+.It
+In the first 5 fields,
+.Sq *
+means that the field is unspecified,
+.Sq -
+can be used for inclusive ranges,
+and a
+.Sq /
+after a
+.Sq *
+or after a range specifies a period.
+.It
+For the months and week-days fields, 3-letter case-insensitive aliases may be used (for example: Jan, JUL, aug).
+.It
+In the week-days field, 0 and 7 both mean Sunday.
+.It
+Commands are executed if
+.Em either
+the month-day
+.Em or
+the week-day matches the current day.
+.It
+Rules can contain data to be sent to the commands stdin through the usual percent sign syntax.
+.It
+Of course, the percent sign can also be escaped by preceding it with a backslash.
+.El
+.Sh AUTHORS
+.An Thomas Oltmann Aq Mt thomas.oltmann.hhg@gmail.com

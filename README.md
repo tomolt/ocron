@@ -14,11 +14,11 @@ Also, it looks like **ocron** uses quite a bit less memory than other cron imple
 **ocron** understands all the usual syntax features and common extensions that you've come to expect from a cron daemon:
 
 - Both comments and blank lines are allowed.
-- Rules are of the following form: `minutes hours month-days months week-days command`
-- In the first 5 fields, '\*' means that the field is unspecified, '-' can be used for inclusive ranges, '/' after '\*' or after a range specifies periods.
-- For the `months` and `week-days` fields, 3-letter case-insensitive aliases may be used (for example: `Jan`, `JUL`, `aug`).
-- In the `week-days` field, 0 and 7 both mean Sunday.
-- Commands are executed if *either* the `month-day` *or* the `week-day` matches the current day.
+- Rules are of the following form: `minutes   hours   month-days   months   week-days   command`
+- In the first 5 fields, '\*' means that the field is unspecified, '-' can be used for inclusive ranges, and a '/' after a '\*' or after a range specifies a period.
+- For the months and week-days fields, 3-letter case-insensitive aliases may be used (for example: `Jan`, `JUL`, `aug`).
+- In the week-days field, 0 and 7 both mean Sunday.
+- Commands are executed if *either* the month-day *or* the week-day matches the current day.
 - Rules can contain data to be sent to the commands stdin through the usual percent sign syntax.
 - Of course, the percent sign can also be escaped by preceding it with a backslash.
 
