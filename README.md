@@ -14,7 +14,10 @@ Also, it looks like **ocron** uses quite a bit less memory than other cron imple
 **ocron** understands all the usual syntax features and common extensions that you've come to expect from a cron daemon:
 
 - Both comments and blank lines are allowed.
-- Rules are of the following form: `minutes   hours   month-days   months   week-days   command`
+- Rules are of the following form:
+```
+minutes   hours   month-days   months   week-days   command
+```
 - In the first 5 fields, '\*' means that the field is unspecified, '-' can be used for inclusive ranges, and a '/' after a '\*' or after a range specifies a period.
 - For the months and week-days fields, 3-letter case-insensitive aliases may be used (for example: `Jan`, `JUL`, `aug`).
 - In the week-days field, 0 and 7 both mean Sunday.
@@ -29,7 +32,7 @@ Also, it looks like **ocron** uses quite a bit less memory than other cron imple
 If a rule contains syntax errors and cannot be parsed, it is simply ignored (with a warning message), so other rules will still execute just fine.
 Also, **ocron** will run correctly if no valid rules are specified or the crontab file doesn't exist.
 
-After startup, **ocron** doesn't allocate any new memory, so memory leaks and out-of-memory situations can't arise after startup.
+After startup, **ocron** doesn't allocate any new memory, so memory leaks and out-of-memory situations can't arise.
 
 
 ## How to install
@@ -41,8 +44,8 @@ The Makefile honors both `PREFIX` and `DESTDIR`.
 
 ## How to run
 
-If you want to run **ocron** at startup like any other daemon, you will have to write a service for your init system for it. (systemd / Sys V init / runit / ...).
+If you want to run **ocron** at startup like any other daemon, you will have to write a service for your init system (systemd / Sys V init / runit / ...) for it.
 Note that **ocron** never daemonizes itself and always logs to the system log.
 If you need it to run in the background, consider using Linux' `daemonize(1)` or FreeBSD's `daemon(1)`.
-However, note that most init system want to do the daemonization themselves.
+However, most init system want to do the daemonization themselves.
 
