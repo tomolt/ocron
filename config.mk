@@ -3,7 +3,6 @@
 CC=cc
 LD=cc
 # NOTE GCC with -pedantic gives false positive warnings about syslog().
-#
-CFLAGS=-Wall -Wextra
+CFLAGS=-Os -Wall -Wextra
 LDFLAGS=-Os
 
