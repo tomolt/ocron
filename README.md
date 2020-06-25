@@ -47,5 +47,5 @@ The Makefile honors both `PREFIX` and `DESTDIR`.
 If you want to run **ocron** at startup like any other daemon, you will have to write a service for your init system (systemd / Sys V init / runit / ...) for it.
 Note that **ocron** never daemonizes itself and always logs to the system log.
 If you need it to run in the background, consider using Linux' `daemonize(1)` or FreeBSD's `daemon(1)`.
-However, most init system want to do the daemonization themselves.
+However, most init systems want to do the daemonization themselves.
 
