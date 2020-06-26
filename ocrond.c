@@ -167,16 +167,6 @@ days_in_month(int month, int year)
 	return month != 1 ? 30 + ((month % 7 + 1) & 1) : 28 + is_leap_year(year);
 }
 
-static int
-has_prefix(const char *str, const char *pfx)
-{
-	while (*pfx) {
-		if ((*str | 0x20) != (*pfx | 0x20)) return 0;
-		++str, ++pfx;
-	}
-	return 1;
-}
-
 static void
 die(const char *fmt, ...)
 {
@@ -346,8 +336,9 @@ parse_value(const char *aliases[], int *number)
 		return 0;
 	}
 	for (i = 0; aliases[i] != NULL; ++i) {
-		if (has_prefix(text, aliases[i])) {
-			text += strlen(aliases[i]);
+		/* alias lengths are hardcoded to 3 letters here. */
+		if (strncasecmp(text, aliases[i], 3) == 0) {
+			text += 3;
 			*number = i;
 			return 0;
 		}
@@ -428,8 +419,8 @@ parse_command(char **command)
 		*out++ = c;
 		esc = c == '\\';
 	}
-	/* NULL-terminate the string. */
-	*out++ = 0;
+	/* NUL-terminate the string. */
+	*out = 0;
 	
 	/* Split command from stdin data. */
 	*pstrchrnul(*command, '\n') = 0;
@@ -547,14 +538,12 @@ run_job(int idx)
 	pid_t pid;
 	int infd;
 
-	if ((infd = create_infile(0)) < 0) return;
-	pid = fork();
 	switch (pid = fork()) {
 	case -1:
 		syslog(LOG_EMERG, "Cannot start a new process: %m");
 		return;
 	case 0:
-		/* Only use async-signal-safe calls from here on out! */
+		if ((infd = create_infile(0)) < 0) exit(137);
 		setpgid(0, 0);
 		dup2(infd, STDIN_FILENO);
 		execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
@@ -562,7 +551,7 @@ run_job(int idx)
 		exit(137);
 	default:
 		/* TODO print out job linenumber! */
-		syslog(LOG_EMERG, "Executing job with pid %d.", pid);
+		syslog(LOG_NOTICE, "Executing job with pid %d.", pid);
 		return;
 	}
 }
@@ -645,7 +634,8 @@ restart:
 		case TIME_CHANGED:
 			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
 			goto restart;
-		default: break;
+		default:
+			break;
 		}
 		reap_zombies();
 	}
