@@ -1,5 +1,10 @@
 /* See LICENSE file for copyright and license details. */
 
+/* Mostly Posix.1-2008 compatible, but also relies on the following extensions:
+ * reallocarray(3), ffsl(3), ffsll(3). */
+
+/* FIXME close(2) can receive EINTR! */
+
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -8,6 +13,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -17,10 +23,10 @@
 
 #include "config.h"
 
-#define VERSION "0.8"
+#define VERSION "0.9"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
+
 #define VALID_HOUR(job, hour) ((job).hours >> (hour) & 1)
 #define VALID_MDAY(job, mday) ((job).mdays >> (mday) & 1)
 #define VALID_WDAY(job, wday) ((job).wdays >> (wday) & 1)
@@ -63,24 +69,102 @@ static char *eol;
 
 /* General utility functions. */
 
-static void
-die(const char *fmt, ...)
+/* Similar to read(2), but automatically restarts if less than count
+ * bytes were read or if EINTR, EAGAIN, or EWOULDBLOCK occurred. */
+static int
+readall(int fd, void *buf, size_t count)
 {
-	va_list ap;
-
-	va_start(ap, fmt);
-	vsyslog(LOG_EMERG, fmt, ap);
-	va_end(ap);
-
-	exit(EXIT_FAILURE);
+	ssize_t ret;
+	while (count > 0) {
+		ret = read(fd, buf, count);
+		if (ret < 0) {
+			if (errno != EINTR && errno != EAGAIN &&
+			    errno != EWOULDBLOCK) return -1;
+			ret = 0;
+		}
+		buf += ret, count -= ret;
+	}
+	return 0;
 }
 
-static void *
-emalloc(size_t size)
+/* Similar to write(2), but automatically restarts if less than count
+ * bytes were written or if EINTR, EAGAIN, or EWOULDBLOCK occurred. */
+static int
+writeall(int fd, const void *buf, size_t count)
 {
-	void *mem;
-	if ((mem = malloc(size)) == NULL) die("Out of memory.");
-	return mem;
+	ssize_t ret;
+	while (count > 0) {
+		ret = write(fd, buf, count);
+		if (ret < 0) {
+			if (errno != EINTR && errno != EAGAIN &&
+			    errno != EWOULDBLOCK) return -1;
+			ret = 0;
+		}
+		buf += ret, count -= ret;
+	}
+	return 0;
+}
+
+/* Open a unique close-on-exec temporary file for reading & writing
+ * that is not visible from the file system. 
+ * The template argument is the same as for mkstemp(3), except that
+ * it won't be overwritten. */
+static int
+mkanonfile(const char *template)
+{
+	char name[128];
+	int fd, flags;
+
+	strncpy(name, template, sizeof(name) - 1);
+	name[sizeof(name) - 1] = 0;
+	
+	if ((fd = mkstemp(name)) < 0) {
+		/* TODO pull out error message stuff. */
+		syslog(LOG_EMERG, "Can't open temp file: %m");
+		return -1;
+	}
+
+	/* Why isn't mkostemp(3) part of POSIX? Argh ... */
+	/* At least I'm pretty sure we don't have to check for errors here. */
+	flags = fcntl(fd, F_GETFD);
+	fcntl(fd, F_SETFD, flags & FD_CLOEXEC);
+	
+	if (unlink(name) < 0) {
+		/* TODO pull out error message stuff. */
+		syslog(LOG_EMERG, "Can't unlink temp file: %m");
+		close(fd);
+		return -1;
+	}
+
+	return fd;
+}
+
+/* Just like glibc's strchrnul(3), but portable.
+ * Essentially, it behaves just like strchr(3), but it will
+ * also return any NUL characters encountered along the way. */
+static char *
+pstrchrnul(const char *str, int ch)
+{
+	while (*str && *str != ch) ++str;
+	/* Hacky, but mandated by the function signature. */
+	return (char *) str;
+}
+
+/* Returns 0 or 1 depending on whether year is a leap year in the Gregorian calendar or not.
+ * year must contain the actual year, without offset. */
+static int
+is_leap_year(int year)
+{
+	return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+}
+
+/* Computes how many days there are in a particular month of the Gregorian calendar.
+ * month may be in the range 0 to 11 inclusive, and year must contain the actual year,
+ * without offset. */
+static int
+days_in_month(int month, int year)
+{
+	return month != 1 ? 30 + ((month % 7 + 1) & 1) : 28 + is_leap_year(year);
 }
 
 static int
@@ -93,22 +177,16 @@ has_prefix(const char *str, const char *pfx)
 	return 1;
 }
 
-static int
-days_in_month(int month, int year)
+static void
+die(const char *fmt, ...)
 {
-	assert(month >= 0 && month < 12);
-	if (month != 1) {
-		return 30 + ((month % 7 + 1) & 1);
-	} else {
-		return 28 + IS_LEAP_YEAR(year);
-	}
-}
+	va_list ap;
 
-static char *
-find_eol(char *line)
-{
-	while (*line && *line != '\n') ++line;
-	return line;
+	va_start(ap, fmt);
+	vsyslog(LOG_EMERG, fmt, ap);
+	va_end(ap);
+
+	exit(EXIT_FAILURE);
 }
 
 static char *
@@ -116,23 +194,18 @@ read_file(const char *filename)
 {
 	struct stat info;
 	char *contents;
-	ssize_t off = 0, ret;
 	int fd;
 
 	fd = open(filename, O_RDONLY);
-	if (fd < 0) die("Can't open %s: %m", filename);
-
-	if (fstat(fd, &info) < 0) die("Can't stat %s: %m", filename);
-
-	contents = emalloc(info.st_size + 1);
+	if (fd < 0)
+		die("Can't open %s: %m", filename);
+	if (fstat(fd, &info) < 0)
+		die("Can't stat %s: %m", filename);
+	if ((contents = malloc(info.st_size + 1)) == NULL)
+		die("Out of memory.");
+	if (readall(fd, contents, info.st_size) < 0)
+		die("Can't read %s: %m", filename);
 	contents[info.st_size] = 0;
-
-	while (off < info.st_size) {
-		ret = read(fd, contents + off, info.st_size - off);
-		if (ret < 0) die("Can't read %s: %m", filename);
-		off += ret;
-	}
-
 	close(fd);
 
 	return contents;
@@ -340,7 +413,9 @@ parse_command(char **command)
 	/* Guard against empty commands. */
 	if (text >= eol) return -1;
 	
-	*command = emalloc(eol - text + 2);
+	if ((*command = malloc(eol - text + 2)) == NULL) {
+		die("Out of memory.");
+	}
 
 	/* Decode escaped string into its raw form. */
 	out = *command;
@@ -357,7 +432,7 @@ parse_command(char **command)
 	*out++ = 0;
 	
 	/* Split command from stdin data. */
-	*find_eol(*command) = 0;
+	*pstrchrnul(*command, '\n') = 0;
 
 	return 0;
 }
@@ -423,7 +498,7 @@ parse_file(const char *filename)
 	contents = read_file(filename);
 	text = contents;
 	do {
-		eol = find_eol(text);
+		eol = pstrchrnul(text, '\n');
 		if (parse_line() < 0) {
 			syslog(LOG_WARNING, "Line %d of %s will be ignored because of bad syntax.\n", lineno, filename);
 		}
@@ -436,49 +511,60 @@ parse_file(const char *filename)
 
 /* Job execution & main loop. */
 
-static void
-fake_stdin(int idx)
+static int
+create_infile(int idx)
 {
-	char *inname, *indata;
+	char *indata;
 	size_t inlen;
-	ssize_t ret;
 	int infd;
 
-	/* Write input data to a temporary file and make stdin point to it. */
-	inname = strdup(STDIN_TEMP);
-	if (inname == NULL) die("strdup: %m");
-	infd = mkstemp(inname);
-	if (infd < 0) die("mkstemp: %m");
-	if (unlink(inname) < 0) die("unlink: %m");
 	indata = strchr(jobs[idx].command, 0) + 1;
 	inlen = strlen(indata);
-	while (inlen > 0) {
-		ret = write(infd, indata, inlen);
-		if (ret < 0) die("write: %m");
-		inlen -= ret;
-		indata += ret;
+
+	if (inlen) {
+		if ((infd = mkanonfile(STDIN_TEMP)) < 0) {
+			return -1;
+		}
+		if (writeall(infd, indata, inlen) < 0) {
+			syslog(LOG_EMERG, "Can't write to temp file: %m");
+			close(infd);
+			return -1;
+		}
+		/* Don't need to check for errors here. */
+		lseek(infd, 0, SEEK_SET);
+	} else {
+		if ((infd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0) {
+			syslog(LOG_EMERG, "Can't open /dev/null for reading: %m");
+			return -1;
+		}
 	}
-	lseek(infd, 0, SEEK_SET);
-	dup2(infd, STDIN_FILENO);
-	close(infd);
+	return infd;
 }
 
 static void
 run_job(int idx)
 {
 	pid_t pid;
+	int infd;
 
-	/* Fork and return immediately in the parent process. */
+	if ((infd = create_infile(0)) < 0) return;
 	pid = fork();
-	if (pid < 0) syslog(LOG_EMERG, "fork: %m");
-	if (pid != 0) return;
-
-	fake_stdin(idx);
-
-	setpgid(0, 0);
-	execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
-	/* If we reach this code, execl() must have failed. */
-	die("execl: %m", jobs[idx].command);
+	switch (pid = fork()) {
+	case -1:
+		syslog(LOG_EMERG, "Cannot start a new process: %m");
+		return;
+	case 0:
+		/* Only use async-signal-safe calls from here on out! */
+		setpgid(0, 0);
+		dup2(infd, STDIN_FILENO);
+		execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
+		/* If we reach this line, execl() must have failed. */
+		exit(137);
+	default:
+		/* TODO print out job linenumber! */
+		syslog(LOG_EMERG, "Executing job with pid %d.", pid);
+		return;
+	}
 }
 
 enum Event { REACHED_TARGET, SKIPPED_TARGET, CAUGHT_SIGNAL, TIME_CHANGED, NOTHING_HAPPENED };
