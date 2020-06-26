@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
@@ -78,16 +79,6 @@ emalloc(size_t size)
 	void *mem;
 	if ((mem = malloc(size)) == NULL) die("Out of memory.");
 	return mem;
-}
-
-static void
-reap_children(void)
-{
-	struct sigaction ign;
-	ign.sa_handler = SIG_IGN;
-	sigemptyset(&ign.sa_mask);
-	ign.sa_flags = SA_RESTART | SA_NOCLDSTOP | SA_NOCLDWAIT;
-	sigaction(SIGCHLD, &ign, NULL);
 }
 
 static int
@@ -488,50 +479,88 @@ run_job(int idx)
 	die("execl: %m", jobs[idx].command);
 }
 
+enum Event { REACHED_TARGET, SKIPPED_TARGET, CAUGHT_SIGNAL, TIME_CHANGED, NOTHING_HAPPENED };
+
+static enum Event
+anticipate(time_t *now, time_t *target)
+{
+	struct timespec spec;
+	time_t past;
+	if (target != NULL) {
+		if (*target > *now) {
+			past = *now;
+			spec.tv_sec = MIN(*target - *now, (WAKEUP_PERIOD) * 60);
+			spec.tv_nsec = 0L;
+			if (nanosleep(&spec, NULL) < 0) return CAUGHT_SIGNAL;
+			time(now);
+			if (*now < past) return TIME_CHANGED;
+			return NOTHING_HAPPENED;
+		} else {
+			return *now - *target <= (CATCHUP_LIMIT) * 60 ? REACHED_TARGET : SKIPPED_TARGET;
+		}
+	} else {
+		pause();
+		return CAUGHT_SIGNAL;
+	}
+}
+
+static void
+reap_zombies(void)
+{
+	pid_t pid;
+	int status;
+	do {
+		pid = waitpid(-1, &status, WNOHANG);
+		if (pid > 0) {
+			if (WIFEXITED(status)) {
+				syslog(LOG_NOTICE, "pid %d returned with status %d.", pid, WEXITSTATUS(status));
+			} else if (WIFSIGNALED(status)) {
+				syslog(LOG_WARNING, "pid %d terminated by signal %s.", pid, strsignal(WTERMSIG(status)));
+			} else if (WIFSTOPPED(status)) {
+				syslog(LOG_WARNING, "pid %d stopped by signal %s.", pid, strsignal(WSTOPSIG(status)));
+			}
+		}
+	} while (pid);
+}
+
 int
 main()
 {
-	time_t now, target, start;
+	time_t now;
 	int i;
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
-	reap_children();
 	/* Yes, there's a race condition here, but all you can achieve with it
 	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
 	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
-
-recalculate:
 	time(&now);
+
+restart:
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
 	for (i = numJobs / 2 - 1; i >= 0; --i) heapify_jobs(i);
 	for (;;) {
-		if (!numJobs) {
-			syslog(LOG_DEBUG, "No jobs found. Idling indefinitely.");
-			pause();
-			continue;
-		}
-
-		target = jobs[0].time;
-		start = time(&now);
-		for (;;) {
-			if (now < start) {
-				syslog(LOG_NOTICE, "Detected that the system time was set back significantly. Recalculating.");
-				goto recalculate;
-			}
-			if (now >= target) break;
-			sleep(MIN(target - now, (WAKEUP_PERIOD) * 60));
-			time(&now);
-		}
-
-		if (now - target < (CATCHUP_LIMIT) * 60) {
+		switch (anticipate(&now, numJobs ? &jobs[0].time : NULL)) {
+		case REACHED_TARGET:
 			run_job(0);
-		} else {
-			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far in the past. (Was the system time set forward?)", jobs[0].command);
+			update_job(0, now);
+			heapify_jobs(0);
+			break;
+		case SKIPPED_TARGET:
+			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far "
+				"in the past. (Was the system time set forward?)", jobs[0].command);
+			update_job(0, now);
+			heapify_jobs(0);
+			break;
+		case CAUGHT_SIGNAL:
+			syslog(LOG_DEBUG, "Caught a signal!");
+			reap_zombies();
+			break;
+		case TIME_CHANGED:
+			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
+			goto restart;
+		default: break;
 		}
-
-		update_job(0, now);
-		heapify_jobs(0);
 	}
 }
