@@ -17,6 +17,8 @@
 
 #include "config.h"
 
+#define VERSION "0.8"
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define IS_LEAP_YEAR(year) ((year) % 4 == 0 && ((year) % 100 != 0 || (year) % 400 == 0))
 #define VALID_HOUR(job, hour) ((job).hours >> (hour) & 1)
@@ -509,18 +511,15 @@ reap_zombies(void)
 {
 	pid_t pid;
 	int status;
-	do {
-		pid = waitpid(-1, &status, WNOHANG);
-		if (pid > 0) {
-			if (WIFEXITED(status)) {
-				syslog(LOG_NOTICE, "pid %d returned with status %d.", pid, WEXITSTATUS(status));
-			} else if (WIFSIGNALED(status)) {
-				syslog(LOG_WARNING, "pid %d terminated by signal %s.", pid, strsignal(WTERMSIG(status)));
-			} else if (WIFSTOPPED(status)) {
-				syslog(LOG_WARNING, "pid %d stopped by signal %s.", pid, strsignal(WSTOPSIG(status)));
-			}
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		if (WIFEXITED(status)) {
+			syslog(LOG_NOTICE, "pid %d returned with status %d.", pid, WEXITSTATUS(status));
+		} else if (WIFSIGNALED(status)) {
+			syslog(LOG_WARNING, "pid %d terminated by signal %s.", pid, strsignal(WTERMSIG(status)));
+		} else if (WIFSTOPPED(status)) {
+			syslog(LOG_WARNING, "pid %d stopped by signal %s.", pid, strsignal(WSTOPSIG(status)));
 		}
-	} while (pid);
+	}
 }
 
 int
@@ -530,6 +529,7 @@ main()
 	int i;
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
+	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
 	/* Yes, there's a race condition here, but all you can achieve with it
 	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
 	if (!(access(CRONTAB, F_OK) < 0)) {
@@ -555,12 +555,12 @@ restart:
 			break;
 		case CAUGHT_SIGNAL:
 			syslog(LOG_DEBUG, "Caught a signal!");
-			reap_zombies();
 			break;
 		case TIME_CHANGED:
 			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
 			goto restart;
 		default: break;
 		}
+		reap_zombies();
 	}
 }
