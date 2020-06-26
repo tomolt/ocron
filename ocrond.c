@@ -43,6 +43,7 @@ struct Job
 	long mdays;
 	short months;
 	short wdays;
+	short lineno;
 };
 
 static const char *no_aliases[] = { NULL };
@@ -429,12 +430,13 @@ parse_command(char **command)
 }
 
 static int
-parse_line(void)
+parse_line(int lineno)
 {
 	struct Job job;
 	long long field;
 
 	memset(&job, 0, sizeof(job));
+	job.lineno = lineno;
 
 	/* We don't care if we actually find spaces here or not. */
 	skip_space();
@@ -490,7 +492,7 @@ parse_file(const char *filename)
 	text = contents;
 	do {
 		eol = pstrchrnul(text, '\n');
-		if (parse_line() < 0) {
+		if (parse_line(lineno) < 0) {
 			syslog(LOG_WARNING, "Line %d of %s will be ignored because of bad syntax.\n", lineno, filename);
 		}
 		text = eol + 1;
@@ -537,21 +539,21 @@ run_job(int idx)
 {
 	pid_t pid;
 	int infd;
-
 	switch (pid = fork()) {
 	case -1:
 		syslog(LOG_EMERG, "Cannot start a new process: %m");
 		return;
 	case 0:
-		if ((infd = create_infile(0)) < 0) exit(137);
+		if ((infd = create_infile(0)) < 0)
+			goto child_failed;
 		setpgid(0, 0);
 		dup2(infd, STDIN_FILENO);
 		execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
 		/* If we reach this line, execl() must have failed. */
+	child_failed:
 		exit(137);
 	default:
-		/* TODO print out job linenumber! */
-		syslog(LOG_NOTICE, "Executing job with pid %d.", pid);
+		syslog(LOG_NOTICE, "Executing job #%d with pid %d.", jobs[idx].lineno, pid);
 		return;
 	}
 }
@@ -623,8 +625,8 @@ restart:
 			heapify_jobs(0);
 			break;
 		case SKIPPED_TARGET:
-			syslog(LOG_NOTICE, "Job '%s' had to be skipped because it was too far "
-				"in the past. (Was the system time set forward?)", jobs[0].command);
+			syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
+				"in the past. (Was the system time set forward?)", jobs[0].lineno);
 			update_job(0, now);
 			heapify_jobs(0);
 			break;
