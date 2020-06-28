@@ -56,6 +56,8 @@ static const char *wdays_aliases[] = {
 	"Thu", "Fri", "Sat", NULL
 };
 
+static sig_atomic_t hasZombies;
+
 /* A queue containing all jobs. Implemented as a binary heap. */
 static int capJobs;
 static int numJobs;
@@ -599,11 +601,24 @@ reap_zombies(void)
 	}
 }
 
+static void
+sigchld_handler(int signal)
+{
+	(void) signal;
+	hasZombies = 1;
+}
+
 int
 main()
 {
 	time_t now;
 	int i;
+
+	struct sigaction sa = { 0 };
+	sa.sa_handler = sigchld_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGCHLD, &sa, NULL);
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
@@ -618,6 +633,10 @@ restart:
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
 	for (i = numJobs / 2 - 1; i >= 0; --i) heapify_jobs(i);
 	for (;;) {
+		if (hasZombies) {
+			reap_zombies();
+			hasZombies = 0;
+		}
 		switch (anticipate(&now, numJobs ? &jobs[0].time : NULL)) {
 		case REACHED_TARGET:
 			run_job(0);
@@ -639,6 +658,5 @@ restart:
 		default:
 			break;
 		}
-		reap_zombies();
 	}
 }
