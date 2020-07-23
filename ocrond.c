@@ -3,8 +3,6 @@
 /* Mostly Posix.1-2008 compatible, but also relies on the following extensions:
  * reallocarray(3), ffsl(3), ffsll(3). */
 
-/* FIXME close(2) can receive EINTR! */
-
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
@@ -45,6 +43,8 @@ struct Job
 	short wdays;
 	short lineno;
 };
+
+enum Event { REACHED_TARGET, SKIPPED_TARGET, CAUGHT_SIGNAL, TIME_CHANGED, NOTHING_HAPPENED };
 
 static const char *no_aliases[] = { NULL };
 static const char *months_aliases[] = {
@@ -118,8 +118,8 @@ mkanonfile(const char *template)
 	char name[128];
 	int fd, flags;
 
-	strncpy(name, template, sizeof(name) - 1);
-	name[sizeof(name) - 1] = 0;
+	assert(strlen(template) < sizeof(name));
+	strcpy(name, template);
 	
 	if ((fd = mkstemp(name)) < 0) {
 		/* TODO pull out error message stuff. */
@@ -170,6 +170,7 @@ days_in_month(int month, int year)
 	return month != 1 ? 30 + ((month % 7 + 1) & 1) : 28 + is_leap_year(year);
 }
 
+/* Exit with a warning message. Should only be called during initialization! */
 static void
 die(const char *fmt, ...)
 {
@@ -205,7 +206,6 @@ read_file(const char *filename)
 }
 
 /* Job time-finding algorithm. */
-
 static void
 update_job(int idx, time_t now)
 {
@@ -269,8 +269,7 @@ finished:
 	jobs[idx].time = mktime(&tm);
 }
 
-/* Restoring the structure of the job queue. */
-
+/* Restores the structure of the job queue. */
 static void
 heapify_jobs(int idx)
 {
@@ -332,6 +331,7 @@ parse_number(int *number)
 static int
 parse_value(const char *aliases[], int *number)
 {
+	size_t len;
 	int i;
 
 	if (isdigit(*text)) {
@@ -339,9 +339,9 @@ parse_value(const char *aliases[], int *number)
 		return 0;
 	}
 	for (i = 0; aliases[i] != NULL; ++i) {
-		/* alias lengths are hardcoded to 3 letters here. */
-		if (strncasecmp(text, aliases[i], 3) == 0) {
-			text += 3;
+		len = strlen(aliases[i]);
+		if (strncasecmp(text, aliases[i], len) == 0) {
+			text += len;
 			*number = i;
 			return 0;
 		}
@@ -504,8 +504,7 @@ parse_file(const char *filename)
 	free(contents);
 }
 
-/* Job execution & main loop. */
-
+/* Create a temporary stdin file for a specific job. */
 static int
 create_infile(int idx)
 {
@@ -536,6 +535,7 @@ create_infile(int idx)
 	return infd;
 }
 
+/* Execute a job. */
 static void
 run_job(int idx)
 {
@@ -560,10 +560,9 @@ run_job(int idx)
 	}
 }
 
-enum Event { REACHED_TARGET, SKIPPED_TARGET, CAUGHT_SIGNAL, TIME_CHANGED, NOTHING_HAPPENED };
-
+/* Sleep until an event arrives. */
 static enum Event
-anticipate(time_t *now, time_t *target)
+wait_for_event(time_t *now, time_t *target)
 {
 	struct timespec spec;
 	time_t past;
@@ -585,6 +584,7 @@ anticipate(time_t *now, time_t *target)
 	}
 }
 
+/* Reap (and log) any zombie childs that have piled up since the last reap. */
 static void
 reap_zombies(void)
 {
@@ -637,7 +637,7 @@ restart:
 			reap_zombies();
 			hasZombies = 0;
 		}
-		switch (anticipate(&now, numJobs ? &jobs[0].time : NULL)) {
+		switch (wait_for_event(&now, numJobs ? &jobs[0].time : NULL)) {
 		case REACHED_TARGET:
 			run_job(0);
 			update_job(0, now);
