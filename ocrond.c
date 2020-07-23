@@ -21,7 +21,7 @@
 
 #include "config.h"
 
-#define VERSION "0.9"
+#define VERSION "0.10"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -39,6 +39,7 @@ struct Job
 	char *command;
 	long hours;
 	long mdays;
+	pid_t pid;
 	short months;
 	short wdays;
 	short lineno;
@@ -541,10 +542,18 @@ run_job(int idx)
 {
 	pid_t pid;
 	int infd;
+
+	/* Only execute the job if it isn't currently running. */
+	if (jobs[idx].pid) {
+		syslog(LOG_WARNING, "Job #%d wont be executed since it is still running.", jobs[idx].lineno);
+		return;
+	}
+
 	switch (pid = fork()) {
 	case -1:
 		syslog(LOG_EMERG, "Cannot start a new process: %m");
 		return;
+
 	case 0:
 		if ((infd = create_infile(0)) < 0)
 			goto child_failed;
@@ -554,8 +563,10 @@ run_job(int idx)
 		/* If we reach this line, execl() must have failed. */
 	child_failed:
 		exit(137);
+
 	default:
 		syslog(LOG_NOTICE, "Executing job #%d with pid %d.", jobs[idx].lineno, pid);
+		jobs[idx].pid = pid;
 		return;
 	}
 }
@@ -566,6 +577,7 @@ wait_for_event(time_t *now, time_t *target)
 {
 	struct timespec spec;
 	time_t past;
+
 	if (target != NULL) {
 		if (*target > *now) {
 			past = *now;
@@ -589,14 +601,29 @@ static void
 reap_zombies(void)
 {
 	pid_t pid;
-	int status;
+	int status, idx;
+
 	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		/* Log the return status of the child. */
 		if (WIFEXITED(status)) {
 			syslog(LOG_NOTICE, "pid %d returned with status %d.", pid, WEXITSTATUS(status));
 		} else if (WIFSIGNALED(status)) {
 			syslog(LOG_WARNING, "pid %d terminated by signal %s.", pid, strsignal(WTERMSIG(status)));
 		} else if (WIFSTOPPED(status)) {
 			syslog(LOG_WARNING, "pid %d stopped by signal %s.", pid, strsignal(WSTOPSIG(status)));
+		} else continue;
+
+		/* Allow the returning job to be ran again. */
+		for (idx = 0; idx < numJobs; ++idx) {
+			if (jobs[idx].pid == pid) {
+				jobs[idx].pid = 0;
+				break;
+			}
+		}
+		
+		/* This shouldn't ever happen, I don't think? */
+		if (idx == numJobs) {
+			syslog(LOG_WARNING, "pid %d was my child but wasn't executed by me!", pid);
 		}
 	}
 }
@@ -622,8 +649,6 @@ main()
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
-	/* Yes, there's a race condition here, but all you can achieve with it
-	 * is making ocrond exit on startup - there's easier ways to do that anyway. */
 	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
@@ -648,9 +673,6 @@ restart:
 				"in the past. (Was the system time set forward?)", jobs[0].lineno);
 			update_job(0, now);
 			heapify_jobs(0);
-			break;
-		case CAUGHT_SIGNAL:
-			syslog(LOG_DEBUG, "Caught a signal!");
 			break;
 		case TIME_CHANGED:
 			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");

@@ -1,4 +1,4 @@
-.Dd June 25, 2020
+.Dd July 23, 2020
 .Dt OCRON 1
 .Os
 .Sh NAME
@@ -34,7 +34,7 @@ and a
 .Sq /
 after a
 .Sq *
-or after a range specifies a period.
+or after a range specifies the duration between executions in that range.
 .It
 For the months and week-days fields, 3-letter case-insensitive aliases may be used (for example: Jan, JUL, aug).
 .It
@@ -45,6 +45,9 @@ Commands are executed if
 the month-day
 .Em or
 the week-day matches the current day.
+.It
+If a command is still running by the time it should be executed again,
+that execution will be skipped and a warning is logged.
 .It
 Rules can contain data to be sent to the commands stdin through the usual percent sign syntax.
 .It
