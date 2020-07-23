@@ -545,7 +545,7 @@ run_job(int idx)
 
 	/* Only execute the job if it isn't currently running. */
 	if (jobs[idx].pid) {
-		syslog(LOG_WARNING, "Job #%d wont be executed since it is still running.", jobs[idx].lineno);
+		syslog(LOG_WARNING, "Job #%d won't be executed since it is still running.", jobs[idx].lineno);
 		return;
 	}
 
