@@ -59,7 +59,7 @@ static const char *wdays_aliases[] = {
 
 static sig_atomic_t hasZombies;
 
-/* A queue containing all jobs. Implemented as a binary heap. */
+/* A queue containing all jobs. Implemented as a simple unordered array. */
 static int capJobs;
 static int numJobs;
 static struct Job *jobs;
@@ -270,29 +270,18 @@ finished:
 	jobs[idx].time = mktime(&tm);
 }
 
-/* Restores the structure of the job queue. */
-static void
-heapify_jobs(int idx)
+static int
+closest_job(void)
 {
-	struct Job tmp;
-	int left, right, min;
-
-	for (;;) {
-		left = 2 * idx + 1;
-		right = left + 1;
-		min = idx;
-		if (left < numJobs && jobs[left].time < jobs[min].time) {
-			min = left;
-		}
-		if (right < numJobs && jobs[right].time < jobs[min].time) {
-			min = right;
-		}
-		if (min == idx) return;
-		tmp = jobs[idx];
-		jobs[idx] = jobs[min];
-		jobs[min] = tmp;
-		idx = min;
+	int idx, next = 0;
+	
+	if (!numJobs) return -1;
+	for (idx = 1; idx < numJobs; ++idx) {
+		if (jobs[idx].time < jobs[next].time)
+			next = idx;
 	}
+
+	return next;
 }
 
 /* Crontab parsing. */
@@ -639,7 +628,7 @@ int
 main()
 {
 	time_t now;
-	int i;
+	int i, next;
 
 	struct sigaction sa = { 0 };
 	sa.sa_handler = sigchld_handler;
@@ -656,23 +645,23 @@ main()
 
 restart:
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
-	for (i = numJobs / 2 - 1; i >= 0; --i) heapify_jobs(i);
+	next = closest_job();
 	for (;;) {
 		if (hasZombies) {
 			reap_zombies();
 			hasZombies = 0;
 		}
-		switch (wait_for_event(&now, numJobs ? &jobs[0].time : NULL)) {
+		switch (wait_for_event(&now, next < 0 ? NULL : &jobs[next].time)) {
 		case REACHED_TARGET:
-			run_job(0);
-			update_job(0, now);
-			heapify_jobs(0);
+			run_job(next);
+			update_job(next, now);
+			next = closest_job();
 			break;
 		case SKIPPED_TARGET:
 			syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
-				"in the past. (Was the system time set forward?)", jobs[0].lineno);
-			update_job(0, now);
-			heapify_jobs(0);
+				"in the past. (Was the system time set forward?)", jobs[next].lineno);
+			update_job(next, now);
+			next = closest_job();
 			break;
 		case TIME_CHANGED:
 			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
