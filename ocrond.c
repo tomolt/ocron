@@ -21,7 +21,7 @@
 
 #include "config.h"
 
-#define VERSION "0.11"
+#define VERSION "0.12"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -58,6 +58,7 @@ static const char *wdays_aliases[] = {
 };
 
 static sig_atomic_t hasZombies;
+static sig_atomic_t shouldReload;
 
 /* A queue containing all jobs. Implemented as a simple unordered array. */
 static int capJobs;
@@ -425,6 +426,21 @@ parse_file(const char *filename)
 	free(contents);
 }
 
+static void
+free_jobs(void)
+{
+	int idx;
+
+	for (idx = 0; idx < numJobs; ++idx) {
+		free(jobs[idx].command);
+	}
+
+	free(jobs);
+	jobs = NULL;
+	numJobs = 0;
+	capJobs = 0;
+}
+
 /* Execute a job. */
 static void
 run_job(int idx)
@@ -497,26 +513,30 @@ reap_zombies(void)
 			syslog(LOG_WARNING, "pid %d stopped by signal %s.", pid, strsignal(WSTOPSIG(status)));
 		} else continue;
 
-		/* Allow the returning job to be ran again. */
+		/* Allow the returning job to be ran again.
+		 * It's not a problem if we don't find a corresponding job. */
 		for (idx = 0; idx < numJobs; ++idx) {
 			if (jobs[idx].pid == pid) {
 				jobs[idx].pid = 0;
 				break;
 			}
 		}
-		
-		/* This shouldn't ever happen, I don't think? */
-		if (idx == numJobs) {
-			syslog(LOG_WARNING, "pid %d was my child but wasn't executed by me!", pid);
-		}
 	}
 }
 
 static void
-sigchld_handler(int signal)
+signal_handler(int signal)
 {
-	(void) signal;
-	hasZombies = 1;
+	switch (signal) {
+	case SIGCHLD:
+		hasZombies = 1;
+		break;
+	case SIGHUP:
+		shouldReload = 1;
+		break;
+	default:
+		break;
+	}
 }
 
 int
@@ -526,10 +546,11 @@ main()
 	int i, next;
 
 	struct sigaction sa = { 0 };
-	sa.sa_handler = sigchld_handler;
+	sa.sa_handler = signal_handler;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 	sigaction(SIGCHLD, &sa, NULL);
+	sigaction(SIGHUP,  &sa, NULL);
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
@@ -545,6 +566,16 @@ restart:
 		if (hasZombies) {
 			reap_zombies();
 			hasZombies = 0;
+		}
+		if (shouldReload) {
+			syslog(LOG_NOTICE, "We're reloading the crontab because we received a SIGHUP.");
+			free_jobs();
+			if (!(access(CRONTAB, F_OK) < 0)) {
+				parse_file(CRONTAB);
+			}
+			shouldReload = 0;
+			time(&now);
+			goto restart;
 		}
 		switch (wait_for_event(&now, next < 0 ? NULL : &jobs[next].time)) {
 		case REACHED_TARGET:

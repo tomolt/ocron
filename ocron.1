@@ -51,6 +51,12 @@ that execution will be skipped and a warning is logged.
 .It
 You cannot pass text into a command's stdin by escaping it with a percent sign (which is something other cron implementations allow you to do).
 However, because all commands are evaluated by a real shell, you can always pipe stdin data to a command from echo or cat.
+.It
+.Nm
+is able to safely reload its crontab file on-the-fly.
+To trigger it, you have to raise a SIGHUP signal.
+This can for example done by executing:
+.Dl kill -s 1 <pid>
 .El
 .Sh AUTHORS
 .An Thomas Oltmann Aq Mt thomas.oltmann.hhg@gmail.com
