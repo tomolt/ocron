@@ -32,6 +32,10 @@
 #define VALID_MONTH(job, month) ((job).months >> (month) & 1)
 #define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
 
+#define HAS_ZOMBIES   0x1
+#define SHOULD_RELOAD 0x2
+#define SHOULD_EXIT   0x4
+
 struct Job
 {
 	long long minutes;
@@ -57,8 +61,7 @@ static const char *wdays_aliases[] = {
 	"Thu", "Fri", "Sat", NULL
 };
 
-static sig_atomic_t hasZombies;
-static sig_atomic_t shouldReload;
+static volatile sig_atomic_t sigFlags;
 
 /* A queue containing all jobs. Implemented as a simple unordered array. */
 static int capJobs;
@@ -529,10 +532,15 @@ signal_handler(int signal)
 {
 	switch (signal) {
 	case SIGCHLD:
-		hasZombies = 1;
+		sigFlags |= HAS_ZOMBIES;
 		break;
 	case SIGHUP:
-		shouldReload = 1;
+		sigFlags |= SHOULD_RELOAD;
+		break;
+	case SIGTERM:
+	case SIGINT:
+	case SIGQUIT:
+		sigFlags |= SHOULD_EXIT;
 		break;
 	default:
 		break;
@@ -551,6 +559,9 @@ main()
 	sa.sa_flags = SA_RESTART;
 	sigaction(SIGCHLD, &sa, NULL);
 	sigaction(SIGHUP,  &sa, NULL);
+	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGINT,  &sa, NULL);
+	sigaction(SIGQUIT, &sa, NULL);
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
@@ -562,18 +573,18 @@ main()
 restart:
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
 	next = closest_job();
-	for (;;) {
-		if (hasZombies) {
+	while (!(sigFlags & SHOULD_EXIT)) {
+		if (sigFlags & HAS_ZOMBIES) {
 			reap_zombies();
-			hasZombies = 0;
+			sigFlags &= ~HAS_ZOMBIES;
 		}
-		if (shouldReload) {
-			syslog(LOG_NOTICE, "We're reloading the crontab because we received a SIGHUP.");
+		if (sigFlags & SHOULD_RELOAD) {
+			syslog(LOG_NOTICE, "Reloading the crontab because we received a SIGHUP.");
 			free_jobs();
 			if (!(access(CRONTAB, F_OK) < 0)) {
 				parse_file(CRONTAB);
 			}
-			shouldReload = 0;
+			sigFlags &= ~SHOULD_RELOAD;
 			time(&now);
 			goto restart;
 		}
@@ -596,5 +607,9 @@ restart:
 			break;
 		}
 	}
+
+	free_jobs();
+	syslog(LOG_NOTICE, "Going down.");
+	closelog();
 }
 
