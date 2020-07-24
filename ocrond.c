@@ -498,7 +498,7 @@ wait_for_event(time_t *now, time_t *target)
 		spec.tv_nsec = 0L;
 		sig = sigtimedwait(&signalMask, NULL, &spec);
 	} else {
-		sig = sigsuspend(&signalMask);
+		sig = sigwaitinfo(&signalMask, NULL);
 	}
 
 	switch (sig) {
