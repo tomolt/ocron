@@ -6,9 +6,6 @@
 #define SHELL         "/bin/sh"
 /* The name that should be used to refer to ocrond in the system log. */
 #define LOGIDENT      "crond"
-/* A template for the names of temporary files used for diverting stdin.
- * Has to contain six contiguous 'X'. */
-#define STDIN_TEMP    "/tmp/crond.stdin.XXXXXX"
 
 /* The maximum amount of time in minutes that may pass before ocrond has to wake up again.
  * These forced wake-ups are only neccessary to detect system clock changes.

@@ -1,4 +1,4 @@
-.Dd July 23, 2020
+.Dd July 24, 2020
 .Dt OCRON 1
 .Os
 .Sh NAME
@@ -49,9 +49,8 @@ the week-day matches the current day.
 If a command is still running by the time it should be executed again,
 that execution will be skipped and a warning is logged.
 .It
-Rules can contain data to be sent to the commands stdin through the usual percent sign syntax.
-.It
-Of course, the percent sign can also be escaped by preceding it with a backslash.
+You cannot pass text into a command's stdin by escaping it with a percent sign (which is something other cron implementations allow you to do).
+However, because all commands are evaluated by a real shell, you can always pipe stdin data to a command from echo or cat.
 .El
 .Sh AUTHORS
 .An Thomas Oltmann Aq Mt thomas.oltmann.hhg@gmail.com

@@ -21,7 +21,7 @@
 
 #include "config.h"
 
-#define VERSION "0.10"
+#define VERSION "0.11"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -89,58 +89,6 @@ readall(int fd, void *buf, size_t count)
 		buf += ret, count -= ret;
 	}
 	return 0;
-}
-
-/* Similar to write(2), but automatically restarts if less than count
- * bytes were written or if EINTR, EAGAIN, or EWOULDBLOCK occurred. */
-static int
-writeall(int fd, const void *buf, size_t count)
-{
-	ssize_t ret;
-	while (count > 0) {
-		ret = write(fd, buf, count);
-		if (ret < 0) {
-			if (errno != EINTR && errno != EAGAIN &&
-			    errno != EWOULDBLOCK) return -1;
-			ret = 0;
-		}
-		buf += ret, count -= ret;
-	}
-	return 0;
-}
-
-/* Open a unique close-on-exec temporary file for reading & writing
- * that is not visible from the file system. 
- * The template argument is the same as for mkstemp(3), except that
- * it won't be overwritten. */
-static int
-mkanonfile(const char *template)
-{
-	char name[128];
-	int fd, flags;
-
-	assert(strlen(template) < sizeof(name));
-	strcpy(name, template);
-	
-	if ((fd = mkstemp(name)) < 0) {
-		/* TODO pull out error message stuff. */
-		syslog(LOG_EMERG, "Can't open temp file: %m");
-		return -1;
-	}
-
-	/* Why isn't mkostemp(3) part of POSIX? Argh ... */
-	/* At least I'm pretty sure we don't have to check for errors here. */
-	flags = fcntl(fd, F_GETFD);
-	fcntl(fd, F_SETFD, flags & FD_CLOEXEC);
-	
-	if (unlink(name) < 0) {
-		/* TODO pull out error message stuff. */
-		syslog(LOG_EMERG, "Can't unlink temp file: %m");
-		close(fd);
-		return -1;
-	}
-
-	return fd;
 }
 
 /* Just like glibc's strchrnul(3), but portable.
@@ -391,33 +339,16 @@ parse_field(int min, int max, const char *aliases[], long long *field)
 static int
 parse_command(char **command)
 {
-	int esc = 0;
-	char *out, c;
+	size_t len;
 
-	/* Guard against empty commands. */
-	if (text >= eol) return -1;
-	
-	if ((*command = malloc(eol - text + 2)) == NULL) {
+	len = eol - text;
+	if (!len) return -1;
+	if ((*command = malloc(len + 1)) == NULL) {
 		die("Out of memory.");
 	}
-
-	/* Decode escaped string into its raw form. */
-	out = *command;
-	while (text < eol) {
-		c = *text++;
-		if (c == '%') {
-			if (esc) --out;
-			else c = '\n';
-		}
-		*out++ = c;
-		esc = c == '\\';
-	}
-	/* NUL-terminate the string. */
-	*out = 0;
+	memcpy(*command, text, len);
+	(*command)[len] = 0;
 	
-	/* Split command from stdin data. */
-	*pstrchrnul(*command, '\n') = 0;
-
 	return 0;
 }
 
@@ -494,43 +425,11 @@ parse_file(const char *filename)
 	free(contents);
 }
 
-/* Create a temporary stdin file for a specific job. */
-static int
-create_infile(int idx)
-{
-	char *indata;
-	size_t inlen;
-	int infd;
-
-	indata = strchr(jobs[idx].command, 0) + 1;
-	inlen = strlen(indata);
-
-	if (inlen) {
-		if ((infd = mkanonfile(STDIN_TEMP)) < 0) {
-			return -1;
-		}
-		if (writeall(infd, indata, inlen) < 0) {
-			syslog(LOG_EMERG, "Can't write to temp file: %m");
-			close(infd);
-			return -1;
-		}
-		/* Don't need to check for errors here. */
-		lseek(infd, 0, SEEK_SET);
-	} else {
-		if ((infd = open("/dev/null", O_RDONLY | O_CLOEXEC)) < 0) {
-			syslog(LOG_EMERG, "Can't open /dev/null for reading: %m");
-			return -1;
-		}
-	}
-	return infd;
-}
-
 /* Execute a job. */
 static void
 run_job(int idx)
 {
 	pid_t pid;
-	int infd;
 
 	/* Only execute the job if it isn't currently running. */
 	if (jobs[idx].pid) {
@@ -544,13 +443,9 @@ run_job(int idx)
 		return;
 
 	case 0:
-		if ((infd = create_infile(0)) < 0)
-			goto child_failed;
 		setpgid(0, 0);
-		dup2(infd, STDIN_FILENO);
 		execl(SHELL, SHELL, "-c", jobs[idx].command, NULL);
 		/* If we reach this line, execl() must have failed. */
-	child_failed:
 		exit(137);
 
 	default:
@@ -671,3 +566,4 @@ restart:
 		}
 	}
 }
+
