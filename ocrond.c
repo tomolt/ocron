@@ -21,7 +21,7 @@
 
 #include "config.h"
 
-#define VERSION "0.12"
+#define VERSION "0.13"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 
@@ -49,7 +49,15 @@ struct Job
 	short lineno;
 };
 
-enum Event { REACHED_TARGET, SKIPPED_TARGET, CAUGHT_SIGNAL, TIME_CHANGED, NOTHING_HAPPENED };
+enum Event {
+	REACHED_TARGET,
+	SKIPPED_TARGET,
+	CHILD_RETURNED,
+	RELOAD_REQUESTED,
+	EXIT_REQUESTED,
+	TIME_CHANGED,
+	NOTHING_HAPPENED
+};
 
 static const char *no_aliases[] = { NULL };
 static const char *months_aliases[] = {
@@ -61,7 +69,7 @@ static const char *wdays_aliases[] = {
 	"Thu", "Fri", "Sat", NULL
 };
 
-static volatile sig_atomic_t sigFlags;
+static sigset_t signalMask;
 
 /* A queue containing all jobs. Implemented as a simple unordered array. */
 static int capJobs;
@@ -479,23 +487,36 @@ static enum Event
 wait_for_event(time_t *now, time_t *target)
 {
 	struct timespec spec;
-	time_t past;
+	time_t past = *now;
+	int sig;
 
 	if (target != NULL) {
-		if (*target > *now) {
-			past = *now;
-			spec.tv_sec = MIN(*target - *now, (WAKEUP_PERIOD) * 60);
-			spec.tv_nsec = 0L;
-			if (nanosleep(&spec, NULL) < 0) return CAUGHT_SIGNAL;
-			time(now);
-			if (*now < past) return TIME_CHANGED;
-			return NOTHING_HAPPENED;
-		} else {
+		if (*target <= *now) {
 			return *now - *target <= (CATCHUP_LIMIT) * 60 ? REACHED_TARGET : SKIPPED_TARGET;
 		}
+		spec.tv_sec = MIN(*target - *now, (WAKEUP_PERIOD) * 60);
+		spec.tv_nsec = 0L;
+		sig = sigtimedwait(&signalMask, NULL, &spec);
 	} else {
-		pause();
-		return CAUGHT_SIGNAL;
+		sig = sigsuspend(&signalMask);
+	}
+
+	switch (sig) {
+	case SIGCHLD:
+		return CHILD_RETURNED;
+	case SIGHUP:
+		return RELOAD_REQUESTED;
+	case SIGTERM:
+	case SIGINT:
+	case SIGQUIT:
+		return EXIT_REQUESTED;
+	case -1:
+		time(now);
+		if (*now < past) return TIME_CHANGED;
+		return NOTHING_HAPPENED;
+	default:
+		assert(0);
+		return NOTHING_HAPPENED;
 	}
 }
 
@@ -527,44 +548,23 @@ reap_zombies(void)
 	}
 }
 
-static void
-signal_handler(int signal)
-{
-	switch (signal) {
-	case SIGCHLD:
-		sigFlags |= HAS_ZOMBIES;
-		break;
-	case SIGHUP:
-		sigFlags |= SHOULD_RELOAD;
-		break;
-	case SIGTERM:
-	case SIGINT:
-	case SIGQUIT:
-		sigFlags |= SHOULD_EXIT;
-		break;
-	default:
-		break;
-	}
-}
-
 int
 main()
 {
 	time_t now;
 	int i, next;
 
-	struct sigaction sa = { 0 };
-	sa.sa_handler = signal_handler;
-	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = SA_RESTART;
-	sigaction(SIGCHLD, &sa, NULL);
-	sigaction(SIGHUP,  &sa, NULL);
-	sigaction(SIGTERM, &sa, NULL);
-	sigaction(SIGINT,  &sa, NULL);
-	sigaction(SIGQUIT, &sa, NULL);
+	sigemptyset(&signalMask);
+	sigaddset(&signalMask, SIGCHLD);
+	sigaddset(&signalMask, SIGHUP);
+	sigaddset(&signalMask, SIGTERM);
+	sigaddset(&signalMask, SIGINT);
+	sigaddset(&signalMask, SIGQUIT);
+
+	sigprocmask(SIG_BLOCK, &signalMask, NULL);
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
-	syslog(LOG_NOTICE, "ocron %s starting up.", VERSION);
+	syslog(LOG_NOTICE, "ocron %s starting up with pid %d.", VERSION, getpid());
 	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
@@ -573,43 +573,47 @@ main()
 restart:
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
 	next = closest_job();
-	while (!(sigFlags & SHOULD_EXIT)) {
-		if (sigFlags & HAS_ZOMBIES) {
-			reap_zombies();
-			sigFlags &= ~HAS_ZOMBIES;
-		}
-		if (sigFlags & SHOULD_RELOAD) {
-			syslog(LOG_NOTICE, "Reloading the crontab because we received a SIGHUP.");
-			free_jobs();
-			if (!(access(CRONTAB, F_OK) < 0)) {
-				parse_file(CRONTAB);
-			}
-			sigFlags &= ~SHOULD_RELOAD;
-			time(&now);
-			goto restart;
-		}
+	for (;;) {
 		switch (wait_for_event(&now, next < 0 ? NULL : &jobs[next].time)) {
 		case REACHED_TARGET:
 			run_job(next);
 			update_job(next, now);
 			next = closest_job();
 			break;
+
 		case SKIPPED_TARGET:
 			syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
 				"in the past. (Was the system time set forward?)", jobs[next].lineno);
 			update_job(next, now);
 			next = closest_job();
 			break;
+
 		case TIME_CHANGED:
 			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
 			goto restart;
+
+		case CHILD_RETURNED:
+			reap_zombies();
+			break;
+
+		case RELOAD_REQUESTED:
+			syslog(LOG_NOTICE, "Reloading the crontab because we received a SIGHUP.");
+			free_jobs();
+			if (!(access(CRONTAB, F_OK) < 0)) {
+				parse_file(CRONTAB);
+			}
+			time(&now);
+			goto restart;
+
+		case EXIT_REQUESTED:
+			syslog(LOG_NOTICE, "Going down.");
+			free_jobs();
+			closelog();
+			exit(0);
+
 		default:
 			break;
 		}
 	}
-
-	free_jobs();
-	syslog(LOG_NOTICE, "Going down.");
-	closelog();
 }
 

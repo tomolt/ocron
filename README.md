@@ -30,8 +30,9 @@ Also, it looks like **ocron** uses less memory than other cron implementations -
 If a rule contains syntax errors and cannot be parsed, it is simply ignored (with a warning message), so other rules will still execute just fine.
 Also, **ocron** will run correctly if no valid rules are specified or the crontab file doesn't exist.
 
-After startup, **ocron** doesn't allocate any new memory, so memory leaks and out-of-memory situations can't arise.
+After (re-) loading the crontab, **ocron** doesn't allocate any new memory, so memory leaks and out-of-memory situations can't arise.
 
+A lot of effort has been made to keep **ocron** free of any signal-related race conditions.
 
 ## How to install
 
