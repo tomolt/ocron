@@ -32,10 +32,6 @@
 #define VALID_MONTH(job, month) ((job).months >> (month) & 1)
 #define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
 
-#define HAS_ZOMBIES   0x1
-#define SHOULD_RELOAD 0x2
-#define SHOULD_EXIT   0x4
-
 struct Job
 {
 	long long minutes;
@@ -484,17 +480,17 @@ run_job(int idx)
 
 /* Sleep until an event arrives. */
 static enum Event
-wait_for_event(time_t *now, time_t *target)
+wait_for_event(time_t *target)
 {
 	struct timespec spec;
-	time_t past = *now;
+	time_t begin = time(NULL);
 	int sig;
 
 	if (target != NULL) {
-		if (*target <= *now) {
-			return *now - *target <= (CATCHUP_LIMIT) * 60 ? REACHED_TARGET : SKIPPED_TARGET;
+		if (*target <= begin) {
+			return begin - *target <= (CATCHUP_LIMIT) * 60 ? REACHED_TARGET : SKIPPED_TARGET;
 		}
-		spec.tv_sec = MIN(*target - *now, (WAKEUP_PERIOD) * 60);
+		spec.tv_sec = MIN(*target - begin, (WAKEUP_PERIOD) * 60);
 		spec.tv_nsec = 0L;
 		sig = sigtimedwait(&signalMask, NULL, &spec);
 	} else {
@@ -511,8 +507,7 @@ wait_for_event(time_t *now, time_t *target)
 	case SIGQUIT:
 		return EXIT_REQUESTED;
 	case -1:
-		time(now);
-		if (*now < past) return TIME_CHANGED;
+		if (time(NULL) < begin) return TIME_CHANGED;
 		return NOTHING_HAPPENED;
 	default:
 		assert(0);
@@ -568,23 +563,23 @@ main()
 	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
-	time(&now);
 
 restart:
+	now = time(NULL);
 	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
 	next = closest_job();
 	for (;;) {
-		switch (wait_for_event(&now, next < 0 ? NULL : &jobs[next].time)) {
+		switch (wait_for_event(next < 0 ? NULL : &jobs[next].time)) {
 		case REACHED_TARGET:
 			run_job(next);
-			update_job(next, now);
+			update_job(next, time(NULL));
 			next = closest_job();
 			break;
 
 		case SKIPPED_TARGET:
 			syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
 				"in the past. (Was the system time set forward?)", jobs[next].lineno);
-			update_job(next, now);
+			update_job(next, time(NULL));
 			next = closest_job();
 			break;
 
@@ -602,7 +597,6 @@ restart:
 			if (!(access(CRONTAB, F_OK) < 0)) {
 				parse_file(CRONTAB);
 			}
-			time(&now);
 			goto restart;
 
 		case EXIT_REQUESTED:
