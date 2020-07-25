@@ -32,6 +32,8 @@
 #define VALID_MONTH(job, month) ((job).months >> (month) & 1)
 #define VALID_DATE(job, mday, wday, month) (VALID_DAY(job, mday, wday) && VALID_MONTH(job, month))
 
+#define JOBREACHED -2
+
 struct Job
 {
 	long long minutes;
@@ -45,16 +47,6 @@ struct Job
 	short lineno;
 };
 
-enum Event {
-	REACHED_TARGET,
-	SKIPPED_TARGET,
-	CHILD_RETURNED,
-	RELOAD_REQUESTED,
-	EXIT_REQUESTED,
-	TIME_CHANGED,
-	NOTHING_HAPPENED
-};
-
 static const char *no_aliases[] = { NULL };
 static const char *months_aliases[] = {
 	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -64,8 +56,6 @@ static const char *wdays_aliases[] = {
 	"Sun", "Mon", "Tue", "Wed",
 	"Thu", "Fri", "Sat", NULL
 };
-
-static sigset_t signalMask;
 
 /* A queue containing all jobs. Implemented as a simple unordered array. */
 static int capJobs;
@@ -478,43 +468,6 @@ run_job(int idx)
 	}
 }
 
-/* Sleep until an event arrives. */
-static enum Event
-wait_for_event(time_t *target)
-{
-	struct timespec spec;
-	time_t begin = time(NULL);
-	int sig;
-
-	if (target != NULL) {
-		if (*target <= begin) {
-			return begin - *target <= (CATCHUP_LIMIT) * 60 ? REACHED_TARGET : SKIPPED_TARGET;
-		}
-		spec.tv_sec = MIN(*target - begin, (WAKEUP_PERIOD) * 60);
-		spec.tv_nsec = 0L;
-		sig = sigtimedwait(&signalMask, NULL, &spec);
-	} else {
-		sig = sigwaitinfo(&signalMask, NULL);
-	}
-
-	switch (sig) {
-	case SIGCHLD:
-		return CHILD_RETURNED;
-	case SIGHUP:
-		return RELOAD_REQUESTED;
-	case SIGTERM:
-	case SIGINT:
-	case SIGQUIT:
-		return EXIT_REQUESTED;
-	case -1:
-		if (time(NULL) < begin) return TIME_CHANGED;
-		return NOTHING_HAPPENED;
-	default:
-		assert(0);
-		return NOTHING_HAPPENED;
-	}
-}
-
 /* Reap (and log) any zombie childs that have piled up since the last reap. */
 static void
 reap_zombies(void)
@@ -546,8 +499,10 @@ reap_zombies(void)
 int
 main()
 {
-	time_t now;
-	int i, next;
+	sigset_t signalMask;
+	struct timespec spec;
+	time_t begin;
+	int i, next, sig;
 
 	sigemptyset(&signalMask);
 	sigaddset(&signalMask, SIGCHLD);
@@ -560,52 +515,72 @@ main()
 
 	openlog(LOGIDENT, LOG_CONS, LOG_CRON);
 	syslog(LOG_NOTICE, "ocron %s starting up with pid %d.", VERSION, getpid());
+
 	if (!(access(CRONTAB, F_OK) < 0)) {
 		parse_file(CRONTAB);
 	}
 
 restart:
-	now = time(NULL);
-	for (i = numJobs - 1; i >= 0; --i) update_job(i, now);
+	begin = time(NULL);
+	for (i = numJobs - 1; i >= 0; --i) update_job(i, begin);
 	next = closest_job();
+
 	for (;;) {
-		switch (wait_for_event(next < 0 ? NULL : &jobs[next].time)) {
-		case REACHED_TARGET:
-			run_job(next);
+		begin = time(NULL);
+
+		if (next < 0) {
+			sig = sigwaitinfo(&signalMask, NULL);
+		} else {
+			if (jobs[next].time > begin) {
+				spec.tv_sec = MIN(jobs[next].time - begin, (WAKEUP_PERIOD) * 60);
+				spec.tv_nsec = 0L;
+				sig = sigtimedwait(&signalMask, NULL, &spec);
+			} else {
+				sig = JOBREACHED;
+			}
+		}
+
+		switch (sig) {
+		case JOBREACHED:
+			if (begin - jobs[next].time <= (CATCHUP_LIMIT) * 60) {
+				run_job(next);
+			} else {
+				syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
+					"in the past. (Was the system time set forward?)", jobs[next].lineno);
+			}
 			update_job(next, time(NULL));
 			next = closest_job();
 			break;
 
-		case SKIPPED_TARGET:
-			syslog(LOG_NOTICE, "Job #%d had to be skipped because it was too far "
-				"in the past. (Was the system time set forward?)", jobs[next].lineno);
-			update_job(next, time(NULL));
-			next = closest_job();
-			break;
-
-		case TIME_CHANGED:
-			syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
-			goto restart;
-
-		case CHILD_RETURNED:
+		case SIGCHLD:
 			reap_zombies();
 			break;
 
-		case RELOAD_REQUESTED:
-			syslog(LOG_NOTICE, "Reloading the crontab because we received a SIGHUP.");
+		case SIGHUP:
+			syslog(LOG_NOTICE, "Reloading %s because we received a SIGHUP.", CRONTAB);
 			free_jobs();
 			if (!(access(CRONTAB, F_OK) < 0)) {
 				parse_file(CRONTAB);
 			}
 			goto restart;
 
-		case EXIT_REQUESTED:
+		case SIGTERM:
+		case SIGINT:
+		case SIGQUIT:
 			syslog(LOG_NOTICE, "Going down.");
 			free_jobs();
 			closelog();
 			exit(0);
 
+		case -1:
+			if (time(NULL) < begin) {
+				syslog(LOG_NOTICE, "Detected that the system time was set back. Recalculating.");
+				goto restart;
+			}
+			break;
+
 		default:
+			assert(0);
 			break;
 		}
 	}
